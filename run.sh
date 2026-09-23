@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PDF-Engine Enterprise Launcher
+# PDF-Engine Enterprise Launcher (FastAPI Backend + React Vite Frontend)
 set -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
@@ -14,11 +14,21 @@ if [ ! -f "$VENV_PYTHON" ]; then
     uv pip install -r requirements.txt
 fi
 
+# Build React + Vite frontend if dist is not built
+if [ ! -d "$DIR/frontend/dist" ]; then
+    echo "[*] Compilando frontend React + Vite + Tailwind..."
+    cd "$DIR/frontend"
+    npm install
+    npm run build
+    cd "$DIR"
+fi
+
 echo "======================================================================"
-echo "🚀 PDF-ENGINE ENTERPRISE - MOTOR ACELERADO DE PROCESAMIENTO DOCUMENTAL"
+echo "🚀 PDF-ENGINE ENTERPRISE - REACT + VITE + TAILWIND + FASTAPI"
 echo "======================================================================"
 echo " • Núcleos CPU detectados: $(nproc) hilos lógicos"
 echo " • OCR: Tesseract 5.x con aceleración paralela y filtros Anti-Todo"
+echo " • Frontend: React + Vite + Tailwind CSS"
 echo " • IA: Ollama (Qwen 2.5 / Llava)"
 echo " • Servidor iniciado en: http://localhost:8000"
 echo "======================================================================"

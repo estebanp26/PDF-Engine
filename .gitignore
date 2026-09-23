@@ -16,3 +16,7 @@ samples/*.pdf
 .DS_Store
 .vscode/
 .idea/
+
+# Frontend Node
+frontend/node_modules/
+frontend/dist/

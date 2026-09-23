@@ -9,12 +9,22 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from fastapi.middleware.cors import CORSMiddleware
+
 from engine.pdf_reader import PDFEngineReader
 from engine.search_index import SearchEngine
 from engine.ai_extractor import AIExtractor
 from engine.generator import PDFGenerator
 
 app = FastAPI(title="PDF-Engine Enterprise", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Directories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,8 +36,12 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(SAMPLES_DIR, exist_ok=True)
 
-# Mount static folder
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+
+# Mount static folder and React dist assets
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+if os.path.exists(os.path.join(FRONTEND_DIST, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 
 # Singleton reader & AI client
 reader = PDFEngineReader()
@@ -46,6 +60,11 @@ class SearchRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
+    # Prefer built React + Vite + Tailwind frontend if available
+    react_index = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(react_index):
+        with open(react_index, "r", encoding="utf-8") as f:
+            return f.read()
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
