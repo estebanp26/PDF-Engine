@@ -14,36 +14,12 @@ TESSERACT_CONFIG = "--oem 1 --psm 3 -l spa+eng"
 MIN_WORD_LEN = 2
 
 
+from engine.vocabulary_cleaner import vocab_cleaner
+
+
 def clean_ocr_text(raw_text: str) -> str:
-    """Clean common OCR noise, margin artifacts, and letter confusions in Spanish docs."""
-    replacements = [
-        (r'\bFacha\b', 'Fecha'),
-        (r'\bGestlon\b', 'Gestión'),
-        (r'\bDisgnostico\b', 'Diagnóstico'),
-        (r'\bPaclente\b', 'Paciente'),
-        (r'\bextemo\b', 'externo'),
-        (r'\btranstorÁcico\b', 'transtorácico'),
-        (r'\belectrocardiogrÁfico\b', 'electrocardiográfico'),
-        (r'\bCONSA[NÑQ][UÚ]O\b', 'CONSALUD'),
-        (r'\bFIDUPREVISORA\s+S\.?A\b', 'FIDUPREVISORA S.A.'),
-    ]
-    lines = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Drop lines that are purely symbol/edge noise
-        alnum = sum(1 for c in line if c.isalnum())
-        if alnum < 2 and len(line) > 1:
-            continue
-        # Strip long streaks of symbols
-        line = re.sub(r'[\=\|\>\<\_\~]{2,}', '', line).strip()
-        for pat, rep in replacements:
-            line = re.sub(pat, rep, line, flags=re.IGNORECASE)
-        line = re.sub(r'\s+', ' ', line).strip()
-        if line:
-            lines.append(line)
-    return "\n".join(lines)
+    """Clean common OCR noise, margin artifacts, and correct corrupted vocabulary."""
+    return vocab_cleaner.clean_text_block(raw_text)
 
 
 def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, float]:

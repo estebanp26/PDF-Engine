@@ -10,6 +10,7 @@ import pymupdf as fitz
 from engine.ocr_engine import FastOCREngine
 from engine.search_index import normalize_text
 from engine.telemetry import SpeedProfiler
+from engine.vocabulary_cleaner import vocab_cleaner
 
 
 def sha256_file(path: str, chunk_size: int = 1 << 20) -> str:
@@ -364,3 +365,6 @@ def _register_ocr_boxes(word_locations, source_id, page, src_label, image_id, bo
         clean = re.sub(r'^[^\w]+|[^\w]+$', '', norm)
         if clean != norm and len(clean) >= 2:
             word_locations.setdefault(clean, []).append(record)
+        corrected = normalize_text(vocab_cleaner.correct_word(clean))
+        if corrected != clean and len(corrected) >= 2:
+            word_locations.setdefault(corrected, []).append(record)
