@@ -7,10 +7,17 @@ export default function ViewerTab({
   onPrevPage,
   onNextPage,
   highlightQuery,
+  highlightRects,
   onClearHighlight
 }) {
-  const previewUrl = activePage 
-    ? `/api/page-preview/${activePage}?t=${Date.now()}${highlightQuery ? `&highlight=${encodeURIComponent(highlightQuery)}` : ''}`
+  const isFlatBox = Array.isArray(highlightRects) && highlightRects.length === 4 && typeof highlightRects[0] === 'number';
+  const boxArray = isFlatBox ? [highlightRects] : highlightRects;
+  const rectsParam = Array.isArray(boxArray) && boxArray.length
+    ? `&rects=${encodeURIComponent(JSON.stringify(boxArray))}`
+    : '';
+
+  const previewUrl = activePage
+    ? `/api/page-preview/${activePage}?t=${Date.now()}${highlightQuery ? `&highlight=${encodeURIComponent(highlightQuery)}` : ''}${rectsParam}`
     : null;
 
   return (

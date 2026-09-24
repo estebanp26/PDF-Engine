@@ -6,6 +6,8 @@ Creates a realistic 20-page test PDF combining:
 - Embedded images with text & numbers
 - Low-contrast / noisy scanned pages to test the 'Anti-Todo' OCR
 Then runs the full PDF-Engine pipeline, measures exact speeds, and tests search + AI.
+
+Run:  .venv/bin/python3 test_benchmark.py
 """
 
 import os
@@ -15,10 +17,14 @@ import time
 import pymupdf as fitz
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import random
+import asyncio
 
 from engine.pdf_reader import PDFEngineReader
 from engine.search_index import SearchEngine
 from engine.ai_extractor import AIExtractor
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SAMPLE_PATH = os.path.join(HERE, "samples", "benchmark_20_pages.pdf")
 
 FONT_PATH = "/usr/share/fonts/noto/NotoSans-Regular.ttf"
 
@@ -39,12 +45,11 @@ def generate_sample_image(text_lines, width=900, height=600, noisy=False, low_co
 
     y = 50
     text_color = (90, 85, 80) if low_contrast else (20, 20, 20)
-    
+
     for line in text_lines:
         draw.text((50, y), line, fill=text_color, font=font)
         y += 65
 
-    # If noisy, add scanner noise and slight blur
     if noisy:
         pixels = img.load()
         for _ in range(4000):
@@ -61,11 +66,11 @@ def generate_sample_image(text_lines, width=900, height=600, noisy=False, low_co
 def build_20_page_benchmark_pdf(output_path: str):
     """Builds a realistic 20-page test PDF."""
     print(f"[*] Generando PDF de prueba de 20 páginas en: {output_path}...")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     doc = fitz.open()
 
-    # 1. Pages 1 to 12: Dense digital text & invoices
     for i in range(1, 13):
-        page = doc.new_page(width=595, height=842) # A4
+        page = doc.new_page(width=595, height=842)  # A4
         if i == 1:
             content = (
                 "DOCUMENTO MAESTRO DE OPERACIONES Y SERVICIOS - RIWI TECH\n\n"
@@ -97,7 +102,6 @@ def build_20_page_benchmark_pdf(output_path: str):
             )
         page.insert_text((50, 70), content, fontsize=12)
 
-    # 2. Pages 13 to 16: Pages with Embedded Images containing text
     image_specs = [
         ["RECIBO DE CAJA MENOR #4491", "Fecha: 15/09/2026", "Valor: $750.000 COP", "PalabraClave: TICKET_IMAGEN_EMBEBIDA"],
         ["ORDEN DE COMPRA OC-9920", "Solicitante: Soporte Tecnico", "Aprobado por: Gerencia General"],
@@ -107,12 +111,10 @@ def build_20_page_benchmark_pdf(output_path: str):
     for idx, lines in enumerate(image_specs, start=13):
         page = doc.new_page(width=595, height=842)
         page.insert_text((50, 50), f"Página {idx}: Documento con Imagen Adjunta", fontsize=12)
-        
         img_bytes = generate_sample_image(lines, width=800, height=450, noisy=False)
         rect = fitz.Rect(50, 100, 545, 450)
         page.insert_image(rect, stream=img_bytes)
 
-    # 3. Pages 17 to 20: Scanned, noisy & low-contrast pages (Pure Images, No digital text)
     scanned_specs = [
         ["FACTURA ESCANEADA ANTIGUA #7721", "Proveedor: Suministros Industriales", "Total: $12.300.000", "PalabraClave: ESCANEO_RUIDOSO_DETECTADO"],
         ["ACTA DE ENTREGA DE EQUIPOS", "Servidor Dell PowerEdge", "Responsable de Entrega: Esteban Padilla"],
@@ -121,88 +123,107 @@ def build_20_page_benchmark_pdf(output_path: str):
     ]
     for idx, lines in enumerate(scanned_specs, start=17):
         page = doc.new_page(width=595, height=842)
-        # We do NOT insert digital text, only the noisy image filling the page!
+        # No digital text, only the noisy image filling the page
         img_bytes = generate_sample_image(lines, width=900, height=1200, noisy=True, low_contrast=True)
-        rect = fitz.Rect(20, 20, 575, 822)
+        rect = fitz.Rect(20, 20, 575, 822)  # 88.8% del área → dedups como escaneo de página completa
         page.insert_image(rect, stream=img_bytes)
 
     doc.save(output_path)
     doc.close()
     print(f"[✓] PDF de 20 páginas creado exitosamente ({os.path.getsize(output_path) / 1024:.1f} KB).")
 
+
+async def _pick_qwen_model(ai: AIExtractor) -> str:
+    """Elija el primer modelo qwen disponible (fallback a qwen2.5:1.5b)."""
+    try:
+        models = await ai.list_available_models()
+        qwen = [m for m in models if "qwen" in m.lower()]
+        if qwen:
+            return qwen[0]
+    except Exception:
+        pass
+    return "qwen2.5:1.5b"
+
+
 async def run_speed_test(pdf_path: str):
-    """Executes benchmark and prints detailed telemetry."""
-    print("\n" + "="*70)
-    print("🚀 INICIANDO TEST DE VELOCIDAD EXTREMA: PDF-ENGINE")
-    print("="*70)
+    """Executes benchmark and prints detailed telemetry in spec format."""
+    print("\n" + "=" * 70)
+    print("BENCHMARK PDF-ENGINE (PyMuPDF + OCR + Índice + Qwen 2.5)")
+    print("=" * 70)
 
     reader = PDFEngineReader()
 
-    # Step 1: Process PDF (Native stream + parallel OCR)
     t0 = time.perf_counter()
     doc_data = reader.process_pdf(pdf_path, run_ocr_on_images=True)
     total_doc_time = time.perf_counter() - t0
-
     metrics = doc_data["metrics"]
-    print(f"\n[⚡ RESULTADOS DEL MOTOR DE LECTURA]")
-    print(f" • Páginas procesadas: {doc_data['total_pages']} páginas")
-    print(f" • Tiempo total lectura + OCR: {total_doc_time:.3f} s ({total_doc_time*1000:.1f} ms)")
+
+    digital_pages = sum(1 for p in doc_data["pages"] if not p["is_scanned"] and p["text"].strip())
+    ocr_pages = sum(1 for p in doc_data["pages"] if p["is_scanned"])
+    total_chars = sum(len(p["text"]) for p in doc_data["pages"]) + \
+                  sum(len(p.get("ocr_text", "")) for p in doc_data["pages"])
+
+    print("\n[ETAPA 1: LECTURA PyMuPDF + OCR paralelo]")
+    print(f" • Páginas digitales (sin OCR): {digital_pages}")
+    print(f" • Páginas/ítems escaneados (OCR, sin duplicar): {doc_data['ocr_items_processed']}")
+    print(f" • Tiempo total lectura+OCR: {total_doc_time:.3f} s ({total_doc_time*1000:.1f} ms)")
     print(f" • Velocidad: {metrics['pages_per_second']} páginas/segundo")
     print(f" • Desglose:")
     for k, v in metrics["breakdown"].items():
         print(f"     - {k}: {v:.4f} s ({v*1000:.1f} ms)")
 
-    # Step 2: Test Search Bar
-    print(f"\n[🔍 TEST DE BÚSQUEDA DE PALABRAS CLAVE]")
-    test_queries = [
-        "FACTURA",                           # Found in digital text + scans
-        "CÓDIGO_SECRETO_ALFA_99",            # Found in digital text (page 5)
-        "TICKET_IMAGEN_EMBEBIDA",            # Found inside embedded image (page 13)
-        "ESCANEO_RUIDOSO_DETECTADO",         # Found inside noisy scanned page (page 17)
-        "Andres Teheran"                     # Found in digital text (page 1)
-    ]
+    print("\n[ETAPA 2: ÍNDICE DE BÚSQUEDA PRECONSTRUIDO]")
+    si = doc_data.get("search_index") or {}
+    word_locations = si.get("word_locations", {})
+    print(f" • Palabras indexadas: {len(word_locations):,}")
+    print(f" • Construido durante la lectura (incluido en el tiempo de la Etapa 1).")
 
+    print("\n[ETAPA 3: BÚSQUEDA DE PALABRAS CLAVE]")
+    test_queries = [
+        "FACTURA",
+        "CÓDIGO_SECRETO_ALFA_99",
+        "TICKET_IMAGEN_EMBEBIDA",
+        "ESCANEO_RUIDOSO_DETECTADO",
+        "Andres Teheran",
+    ]
+    search_times = []
     for q in test_queries:
         t_s = time.perf_counter()
         res = SearchEngine.search(doc_data, q)
         t_search = time.perf_counter() - t_s
-        print(f" • Búsqueda: '{q}' | Coincidencias: {res['total_matches']} | Páginas: {res['matched_pages']} | Tiempo: {t_search*1000:.2f} ms")
+        search_times.append(t_search * 1000)
+        print(f" • '{q}' | Hits: {res['total_matches']} | Páginas: {res['matched_pages']} | {t_search*1000:.2f} ms")
         for r in res["results"][:2]:
-            print(f"     -> [{r['source_label']}] pág {r['page']} ({r['match_type']}): {r['snippet']}")
+            print(f"     -> [{r['source_label']}] pág {r['page']} ({r['match_type']}): {r['snippet'][:70]}")
+    print(f" • Media de tiempo por búsqueda: {sum(search_times)/len(search_times):.2f} ms")
 
-    # Step 3: Test AI Value Extraction with Qwen 2.5
-    print(f"\n[🧠 TEST DE EXTRACCIÓN CON INTELIGENCIA ARTIFICIAL (Qwen 2.5)]")
+    print("\n[ETAPA 4: EXTRACCIÓN CON IA (Qwen 2.5)]")
     ai = AIExtractor()
-    target_fields = [
-        "Número de Factura",
-        "Proveedor Autorizado",
-        "NIT",
-        "Valor Total a Pagar",
-        "Responsable"
-    ]
+    model = await _pick_qwen_model(ai)
+    target_fields = ["Número de Factura", "Proveedor Autorizado", "NIT", "Valor Total a Pagar", "Responsable"]
 
     t_ai_start = time.perf_counter()
-    ai_result = await ai.extract_values(doc_data, target_fields, model="qwen2.5:1.5b")
+    ai_result = await ai.extract_values(doc_data, target_fields, model=model)
     t_ai_total = time.perf_counter() - t_ai_start
 
-    print(f" • Modelo utilizado: {ai_result['model_used']}")
+    print(f" • Modelo: {ai_result['model_used']}")
     print(f" • Tiempo de inferencia IA: {ai_result['latency_seconds']:.3f} s ({ai_result['latency_ms']} ms)")
-    print(f" • Páginas consultadas por IA: {ai_result['pages_consulted']}")
-    print(f" • Valores extraídos:")
+    print(f" • Páginas consultadas: {ai_result['pages_consulted']}")
+    if ai_result.get("error"):
+        print(f" • ⚠ Error IA: {ai_result['error']}")
     for k, v in ai_result["values"].items():
-        print(f"     ✓ {k}: {v}")
+        print(f"     - {k}: {v}")
 
-    # Final Score Summary
-    print("\n" + "="*70)
     grand_total = total_doc_time + t_ai_total
-    print(f"🏆 TIEMPO TOTAL DEL SISTEMA COMPLETO (Lectura 20 págs + OCR + IA): {grand_total:.3f} SEGUNDOS")
-    print("="*70 + "\n")
+    print("\n" + "=" * 70)
+    print(f"RESUMEN: Lectura 20 págs | digital={digital_pages} | OCR={ocr_pages} | chars={total_chars}")
+    print(f"PyMuPDF+OCR+Índice = {total_doc_time:.3f}s | IA = {t_ai_total:.3f}s")
+    print(f"TIEMPO TOTAL DEL SISTEMA COMPLETO: {grand_total:.3f} SEGUNDOS")
+    print("=" * 70 + "\n")
+
 
 if __name__ == "__main__":
-    import asyncio
-    pdf_sample = "/home/andres/Projects/PDF-Engine/samples/benchmark_20_pages.pdf"
-    # Force rebuild to use realistic font
-    if os.path.exists(pdf_sample):
-        os.remove(pdf_sample)
-    build_20_page_benchmark_pdf(pdf_sample)
-    asyncio.run(run_speed_test(pdf_sample))
+    if os.path.exists(SAMPLE_PATH):
+        os.remove(SAMPLE_PATH)
+    build_20_page_benchmark_pdf(SAMPLE_PATH)
+    asyncio.run(run_speed_test(SAMPLE_PATH))

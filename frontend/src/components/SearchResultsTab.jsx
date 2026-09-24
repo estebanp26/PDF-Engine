@@ -68,7 +68,11 @@ export default function SearchResultsTab({
               </div>
 
               <button
-                onClick={() => onJumpToPage(item.page, term)}
+                onClick={() => {
+                  const coords = [item.x0, item.y0, item.x1, item.y1];
+                  const rects = coords.every(c => c !== null && c !== undefined) ? coords : null;
+                  onJumpToPage(item.page, term, rects);
+                }}
                 className="shrink-0 flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-medium rounded-md transition"
               >
                 <span>Ver en Visor</span>

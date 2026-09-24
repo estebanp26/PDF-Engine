@@ -7,7 +7,6 @@ import AiExtractorTab from './components/AiExtractorTab';
 import ViewerTab from './components/ViewerTab';
 import SearchResultsTab from './components/SearchResultsTab';
 import GalleryTab from './components/GalleryTab';
-import AugLyModal from './components/AugLyModal';
 import LoadingOverlay from './components/LoadingOverlay';
 
 export default function App() {
@@ -20,12 +19,13 @@ export default function App() {
   const [documentData, setDocumentData] = useState(null);
   const [activePage, setActivePage] = useState(1);
   const [activeTab, setActiveTab] = useState('ai'); // 'ai', 'viewer', 'search', 'gallery'
-  
+
   // Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResult, setSearchResult] = useState(null);
   const [searching, setSearching] = useState(false);
   const [highlightQuery, setHighlightQuery] = useState('');
+  const [highlightRects, setHighlightRects] = useState(null);
 
   // AI Extraction State
   const [targetFields, setTargetFields] = useState([
@@ -39,12 +39,14 @@ export default function App() {
   const [aiResult, setAiResult] = useState(null);
   const [loadingAi, setLoadingAi] = useState(false);
 
-  // System & Modal State
+  // AI Question-Answering State
+  const [askResult, setAskResult] = useState(null);
+  const [askLoading, setAskLoading] = useState(false);
+
+  // System & Job Progress State
   const [systemStatus, setSystemStatus] = useState(null);
-  const [isAugLyModalOpen, setIsAugLyModalOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [loadingTitle, setLoadingTitle] = useState('');
-  const [loadingDesc, setLoadingDesc] = useState('');
+  const [docJobId, setDocJobId] = useState(null);
+  const [progress, setProgress] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -67,56 +69,75 @@ export default function App() {
       .catch(err => console.warn('Status error:', err));
   }, []);
 
+  const loadDocumentJob = async (url, options) => {
+    try {
+      const res = await fetch(url, options);
+      const data = await res.json();
+      if (res.ok && data.job_id) {
+        setProgress({ percent: 1 });
+        setDocJobId(data.job_id);
+      } else {
+        alert('Error: ' + (data.detail || 'Error desconocido'));
+        setProgress(null);
+      }
+    } catch (err) {
+      alert('Error de red: ' + err.message);
+      setProgress(null);
+    }
+  };
+
+  // Poll job progress until done
+  useEffect(() => {
+    if (!docJobId) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/progress/${docJobId}`);
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.progress) setProgress(data.progress);
+
+        if (data.status === 'done') {
+          clearInterval(timer);
+          const docRes = await fetch(`/api/document/${docJobId}`);
+          const docData = await docRes.json();
+          if (docRes.ok && docData.success) {
+            handleDocumentLoaded(docData);
+          } else {
+            alert('Error: ' + (docData.detail || 'Error obteniendo documento'));
+          }
+          setProgress(null);
+          setDocJobId(null);
+        } else if (data.status === 'error') {
+          clearInterval(timer);
+          alert('Error procesando documento: ' + (data.progress?.error || 'Error desconocido'));
+          setProgress(null);
+          setDocJobId(null);
+        }
+      } catch (e) { /* transient network error, keep polling */ }
+    };
+
+    const timer = setInterval(poll, 400);
+    poll(); // immediate first check
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [docJobId]);
+
   // Upload handler
   const handleUploadFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const formData = new FormData();
     formData.append('file', file);
-
-    setLoading(true);
-    setLoadingTitle('Procesando PDF a Alta Velocidad...');
-    setLoadingDesc('Ejecutando lectura híbrida y OCR paralelo en 12 hilos...');
-
-    try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        handleDocumentLoaded(data);
-      } else {
-        alert('Error al procesar: ' + (data.detail || 'Error desconocido'));
-      }
-    } catch (err) {
-      alert('Error de red al subir: ' + err.message);
-    } finally {
-      setLoading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+    setProgress({ percent: 1 });
+    await loadDocumentJob('/api/upload', { method: 'POST', body: formData });
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // Load sample benchmark
   const handleLoadBenchmark = async () => {
-    setLoading(true);
-    setLoadingTitle('Cargando Benchmark Oficial (20 Páginas)...');
-    setLoadingDesc('Procesando páginas con texto, imágenes y escaneos de prueba...');
-
-    try {
-      const res = await fetch('/api/load-sample', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        handleDocumentLoaded(data);
-      } else {
-        alert('Error cargando benchmark: ' + (data.detail || 'Error'));
-      }
-    } catch (err) {
-      alert('Error de red: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
+    setProgress({ percent: 1 });
+    await loadDocumentJob('/api/load-sample', { method: 'POST' });
   };
 
   // Document loaded helper
@@ -125,7 +146,10 @@ export default function App() {
     setActivePage(1);
     setSearchResult(null);
     setHighlightQuery('');
+    setHighlightRects(null);
     setSearchQuery('');
+    setAiResult(null);
+    setAskResult(null);
   };
 
   // Perform multi-token search
@@ -134,13 +158,13 @@ export default function App() {
     if (!q) {
       setSearchResult(null);
       setHighlightQuery('');
+      setHighlightRects(null);
       return;
     }
     if (!documentData) {
       alert('Carga un documento PDF primero.');
       return;
     }
-
     setSearching(true);
     try {
       const res = await fetch('/api/search', {
@@ -151,6 +175,7 @@ export default function App() {
       const data = await res.json();
       setSearchResult(data);
       setHighlightQuery(q);
+      setHighlightRects(null);
 
       if (data.matched_pages?.length > 0) {
         setActivePage(data.matched_pages[0]);
@@ -163,13 +188,12 @@ export default function App() {
     }
   };
 
-  // AI Extraction
+  // AI Extraction (fields)
   const handleRunAi = async (fields, model) => {
     if (!documentData) {
       alert('Carga un documento PDF primero.');
       return;
     }
-
     setLoadingAi(true);
     try {
       const res = await fetch('/api/extract-ai', {
@@ -186,71 +210,45 @@ export default function App() {
     }
   };
 
-  // Scan generated AugLy document
-  const handleScanGenerated = async (genResult) => {
-    setLoading(true);
-    setLoadingTitle('Escaneando Documento AugLy...');
-    setLoadingDesc('Ejecutando lectura híbrida y OCR paralelo multihilo...');
-
+  // AI Question-Answering
+  const handleAsk = async (question, model) => {
+    if (!documentData) {
+      alert('Carga un documento PDF primero.');
+      return;
+    }
+    setAskLoading(true);
     try {
-      const res = await fetch('/api/scan-generated-pdf', {
+      const res = await fetch('/api/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: genResult.file_path })
+        body: JSON.stringify({ question, model })
       });
       const data = await res.json();
-      if (res.ok && data.success) {
-        handleDocumentLoaded(data);
-
-        // Auto trigger search with first keyword if available
-        if (genResult.injected_keywords?.length > 0) {
-          const firstKw = genResult.injected_keywords[0].term;
-          setSearchQuery(firstKw);
-          // Run search for this term
-          setTimeout(() => {
-            fetch('/api/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query: firstKw })
-            })
-              .then(r => r.json())
-              .then(sData => {
-                setSearchResult(sData);
-                setHighlightQuery(firstKw);
-                if (sData.matched_pages?.length > 0) {
-                  setActivePage(sData.matched_pages[0]);
-                }
-              })
-              .catch(console.error);
-          }, 200);
-        }
-      } else {
-        alert('Error al escanear documento: ' + (data.detail || 'Error'));
-      }
+      setAskResult(data);
     } catch (err) {
-      alert('Error de red: ' + err.message);
+      alert('Error al consultar IA: ' + err.message);
     } finally {
-      setLoading(false);
+      setAskLoading(false);
     }
   };
 
-  // Jump to specific page from search or gallery
-  const handleJumpToPage = (pageNum, term = null) => {
+  // Jump to specific page from search/gallery/answer
+  const handleJumpToPage = (pageNum, term = null, rects = null) => {
     setActivePage(pageNum);
     if (term) setHighlightQuery(term);
+    setHighlightRects(rects || null);
     setActiveTab('viewer');
   };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
-      
+
       {/* Header */}
       <Header
         darkMode={darkMode}
         setDarkMode={setDarkMode}
         onLoadBenchmark={handleLoadBenchmark}
         onUploadClick={() => fileInputRef.current?.click()}
-        onOpenAugly={() => setIsAugLyModalOpen(true)}
         systemStatus={systemStatus}
       />
 
@@ -264,7 +262,7 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6">
-        
+
         {/* Telemetry KPI Strip */}
         <KpiStrip
           documentData={documentData}
@@ -282,7 +280,7 @@ export default function App() {
 
         {/* Workspace Two-Column Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
-          
+
           {/* Left Column: Page Navigator Sidebar */}
           <Sidebar
             pages={documentData?.pages || []}
@@ -296,7 +294,7 @@ export default function App() {
 
           {/* Right Column: Tabbed Content Area */}
           <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-sm min-h-[550px] flex flex-col transition">
-            
+
             {/* Tab Navigation Bar */}
             <nav className="flex flex-wrap border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850 px-4 gap-1">
               <button
@@ -359,6 +357,10 @@ export default function App() {
                   aiResult={aiResult}
                   loadingAi={loadingAi}
                   models={systemStatus?.available_models}
+                  onAsk={handleAsk}
+                  askResult={askResult}
+                  askLoading={askLoading}
+                  onAskJumpToPage={handleJumpToPage}
                 />
               )}
 
@@ -369,7 +371,8 @@ export default function App() {
                   onPrevPage={() => setActivePage(p => Math.max(1, p - 1))}
                   onNextPage={() => setActivePage(p => Math.min(documentData?.total_pages || 1, p + 1))}
                   highlightQuery={highlightQuery}
-                  onClearHighlight={() => setHighlightQuery('')}
+                  highlightRects={highlightRects}
+                  onClearHighlight={() => { setHighlightQuery(''); setHighlightRects(null); }}
                 />
               )}
 
@@ -395,18 +398,10 @@ export default function App() {
 
       </main>
 
-      {/* AugLy Modal */}
-      <AugLyModal
-        isOpen={isAugLyModalOpen}
-        onClose={() => setIsAugLyModalOpen(false)}
-        onScanGenerated={handleScanGenerated}
-      />
-
-      {/* Loading Overlay */}
+      {/* Loading Overlay with live progress */}
       <LoadingOverlay
-        isLoading={loading}
-        title={loadingTitle}
-        desc={loadingDesc}
+        isLoading={!!docJobId}
+        progress={progress}
       />
 
     </div>

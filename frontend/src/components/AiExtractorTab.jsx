@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Brain, Plus, X, Copy, Check, Sparkles, Download } from 'lucide-react';
+import { Brain, Plus, X, Copy, Check, Sparkles, Download, CircleHelp, ArrowRight, FileText } from 'lucide-react';
 
 export default function AiExtractorTab({
   targetFields,
@@ -7,10 +7,15 @@ export default function AiExtractorTab({
   onRunAi,
   aiResult,
   loadingAi,
-  models = ["qwen2.5:1.5b", "llama3.2:3b", "llava:7b"]
+  models = ["qwen2.5:1.5b"],
+  onAsk,
+  askResult,
+  askLoading,
+  onAskJumpToPage
 }) {
   const [newField, setNewField] = useState('');
-  const [selectedModel, setSelectedModel] = useState('qwen2.5:1.5b');
+  const [selectedModel, setSelectedModel] = useState(models[0] || 'qwen2.5:1.5b');
+  const [question, setQuestion] = useState('');
   const [copiedKey, setCopiedKey] = useState(null);
   const [copiedJson, setCopiedJson] = useState(false);
 
@@ -59,9 +64,103 @@ export default function AiExtractorTab({
   const values = aiResult?.values || {};
   const hasValues = Object.keys(values).length > 0;
 
+  const confidence = askResult?.confidence;
+  const confidencePct = confidence != null ? Math.round(confidence * 100) : null;
+
   return (
     <div className="space-y-6">
-      
+
+      {/* Question-Answering (Qwen 2.5) */}
+      <div className="bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <CircleHelp className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+          <h3 className="font-bold text-sm text-slate-900 dark:text-white">Pregunta al Documento (Qwen 2.5)</h3>
+        </div>
+        <p className="text-xs text-slate-600 dark:text-slate-400 mb-3">
+          La pregunta se resuelve con el buscador léxico (fragmentos relevantes) y solo esa evidencia llega a Qwen 2.5.
+        </p>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && question.trim() && onAsk(question.trim(), selectedModel)}
+            placeholder="¿Cuál es el valor total de la factura?"
+            className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-md text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
+          />
+          <button
+            onClick={() => question.trim() && onAsk(question.trim(), selectedModel)}
+            disabled={askLoading || !question.trim()}
+            className="flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-700 text-white text-xs font-semibold rounded-md shadow-sm transition disabled:opacity-50"
+          >
+            {askLoading ? (
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            <span>Preguntar</span>
+          </button>
+        </div>
+
+        {askResult && (
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-400">Pregunta: <b className="text-slate-800 dark:text-slate-200">{askResult.question}</b></span>
+              {askResult.latency_ms != null && (
+                <span className="text-blue-600 dark:text-blue-400 font-medium">⚡ {askResult.latency_ms} ms</span>
+              )}
+            </div>
+
+            {askResult.answer == null || askResult.answer === false ? (
+              <div className="text-slate-500 dark:text-slate-400 italic">
+                No hay evidencia suficiente en el documento para responder esta pregunta.
+              </div>
+            ) : (
+              <>
+                <div className="text-lg font-bold text-slate-900 dark:text-white flex items-baseline gap-2">
+                  {String(askResult.answer)}
+                  {askResult.unit && <span className="text-sm font-medium text-slate-500">{askResult.unit}</span>}
+                </div>
+
+                {confidencePct != null && (
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${confidencePct >= 70 ? 'bg-emerald-500' : confidencePct >= 40 ? 'bg-amber-500' : 'bg-red-500'}`}
+                        style={{ width: `${confidencePct}%` }}
+                      ></div>
+                    </div>
+                    <span className="text-[10px] font-semibold text-slate-500">Confianza {confidencePct}%</span>
+                  </div>
+                )}
+
+                {askResult.evidence && (
+                  <div className="text-slate-600 dark:text-slate-300 border-l-2 border-blue-500 pl-2 italic">
+                    "{askResult.evidence}"
+                  </div>
+                )}
+
+                {askResult.page != null && (
+                  <button
+                    onClick={() => onAskJumpToPage(Number(askResult.page))}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-semibold hover:bg-blue-100 transition"
+                  >
+                    <FileText className="w-3 h-3" />
+                    <span>Ver Página {askResult.page}</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </button>
+                )}
+              </>
+            )}
+
+            {askResult.error && (
+              <div className="text-amber-600 dark:text-amber-400">Aviso IA: {askResult.error}</div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Configuration Area */}
       <div className="bg-slate-50 dark:bg-slate-850 p-4 rounded-lg border border-slate-200 dark:border-slate-800">
         <div className="flex items-center justify-between mb-2">
@@ -76,7 +175,7 @@ export default function AiExtractorTab({
           </span>
         </div>
         <p className="text-xs text-slate-600 dark:text-slate-400 mb-3">
-          El motor realiza poda de contexto (&lt; 600 tokens) para que Qwen 2.5 / Llava responda en tiempo récord.
+          El motor realiza poda de contexto (&lt; 600 tokens) para que Qwen 2.5 responda en tiempo récord.
         </p>
 
         {/* Tag Cloud */}
@@ -128,7 +227,7 @@ export default function AiExtractorTab({
               onChange={(e) => setSelectedModel(e.target.value)}
               className="text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md px-3 py-1.5 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-600"
             >
-              {models.map(m => (
+              {(models.length ? models : ["qwen2.5:1.5b"]).map(m => (
                 <option key={m} value={m}>{m} {m.includes('qwen2.5') ? '(Recomendado - Rápido)' : ''}</option>
               ))}
             </select>
@@ -201,7 +300,7 @@ export default function AiExtractorTab({
                 </tr>
               ) : (
                 Object.entries(values).map(([field, val]) => {
-                  const isFound = val && val !== 'No encontrado' && !val.includes('Error');
+                  const isFound = val && val !== 'No encontrado' && !String(val).includes('Error');
                   const isCopied = copiedKey === field;
 
                   return (
