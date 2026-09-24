@@ -139,14 +139,71 @@ class SearchEngine:
                     "token_searched": loc["word"] or term,
                     "match_type": "exacto",
                     "snippet": snippet_text,
-                    "matched_term": matched_term,
+                    "matched_term": matched_term or loc["word"],
                     "image_id": image_id,
                     "x0": loc.get("x0"), "y0": loc.get("y0"),
                     "x1": loc.get("x1"), "y1": loc.get("y1"),
                 })
                 matched_pages_set.add(page)
 
-        # 2) FUZZY fallback: only for tokens with zero exact hits, len >= 4,
+        # 2) PREFIX MATCH: words starting with the term (autocomplete / partial word search)
+        # e.g. "doc" -> "doctor", "doctores", "documento"
+        # e.g. "entren" -> "entrenamiento", "entrenador", "entrenado"
+        for term in tokens_norm:
+            if len(term) < 2:
+                continue
+            for cand, locs in word_locations.items():
+                cand_clean = re.sub(r'^[^\w]+|[^\w]+$', '', cand)
+                if cand_clean != term and cand_clean.startswith(term):
+                    for loc in locs:
+                        page = loc["page"]
+                        src = loc["src"]
+                        image_id = loc.get("image_id")
+                        txt = source_text(page, src, image_id)
+                        matched_term, snippet_text = _locate_word(txt, loc["word"])
+                        results.append({
+                            "page": page,
+                            "source": "image_ocr" if src == "image_ocr" else src,
+                            "source_label": source_label(src, image_id),
+                            "token_searched": loc["word"] or term,
+                            "match_type": "prefijo",
+                            "snippet": snippet_text,
+                            "matched_term": matched_term or loc["word"],
+                            "image_id": image_id,
+                            "x0": loc.get("x0"), "y0": loc.get("y0"),
+                            "x1": loc.get("x1"), "y1": loc.get("y1"),
+                        })
+                        matched_pages_set.add(page)
+
+        # 3) SUBSTRING MATCH: words containing the term internally (only for terms >= 3 chars)
+        # e.g. "miento" -> "entrenamiento", "financiamiento", "incumplimiento"
+        for term in tokens_norm:
+            if len(term) < 3:
+                continue
+            for cand, locs in word_locations.items():
+                cand_clean = re.sub(r'^[^\w]+|[^\w]+$', '', cand)
+                if term in cand_clean and not cand_clean.startswith(term):
+                    for loc in locs:
+                        page = loc["page"]
+                        src = loc["src"]
+                        image_id = loc.get("image_id")
+                        txt = source_text(page, src, image_id)
+                        matched_term, snippet_text = _locate_word(txt, loc["word"])
+                        results.append({
+                            "page": page,
+                            "source": "image_ocr" if src == "image_ocr" else src,
+                            "source_label": source_label(src, image_id),
+                            "token_searched": loc["word"] or term,
+                            "match_type": "subcadena",
+                            "snippet": snippet_text,
+                            "matched_term": matched_term or loc["word"],
+                            "image_id": image_id,
+                            "x0": loc.get("x0"), "y0": loc.get("y0"),
+                            "x1": loc.get("x1"), "y1": loc.get("y1"),
+                        })
+                        matched_pages_set.add(page)
+
+        # 4) FUZZY fallback: only for tokens with zero matches, len >= 4,
         #    only against the vocabulary (much smaller than full text).
         vocab = sorted(word_locations.keys())
         vocab_by_first: Dict[str, List[str]] = {}
@@ -154,8 +211,10 @@ class SearchEngine:
             vocab_by_first.setdefault(w[0], []).append(w)
 
         for term in tokens_norm:
-            if term in word_locations:
-                continue  # already matched exactly
+            # Check if this term already produced hits
+            term_had_matches = any(r.get("matched_term", "").lower().startswith(term) for r in results)
+            if term_had_matches or term in word_locations:
+                continue
             if len(term) < FUZZY_MIN_LEN:
                 continue
             candidates = vocab_by_first.get(term[0], [])
@@ -181,14 +240,14 @@ class SearchEngine:
                         "token_searched": raw_query,
                         "match_type": f"difuso ({int(ratio*100)}%)",
                         "snippet": snippet_text,
-                        "matched_term": matched_term,
+                        "matched_term": matched_term or loc["word"],
                         "image_id": image_id,
                         "x0": loc.get("x0"), "y0": loc.get("y0"),
                         "x1": loc.get("x1"), "y1": loc.get("y1"),
                     })
                     matched_pages_set.add(page)
 
-        # 3) PHRASE: multi-token queries collapse to a per-page/source match
+        # 5) PHRASE: multi-token queries collapse to a per-page/source match
         #    if every token appears on that page/source.
         if phrase_query:
             for page, src, image_id, label, txt in _iter_sources(document_data):
@@ -223,16 +282,18 @@ class SearchEngine:
                     })
                     matched_pages_set.add(page)
 
-        # Deduplicate identical (page, source, term, coords)
+        # Deduplicate identical (page, source, matched_term, coords)
         dedup_keys: Set[Tuple[Any, ...]] = set()
         deduped: List[Dict[str, Any]] = []
         for r in results:
-            k = (r["page"], r["source"], r["token_searched"], r["x0"], r["y0"])
+            k = (r["page"], r["source"], r.get("matched_term", ""), r["x0"], r["y0"], r.get("snippet", "")[:30])
             if k in dedup_keys:
                 continue
             dedup_keys.add(k)
             deduped.append(r)
-        deduped.sort(key=lambda r: (r["page"], r["source"]))
+
+        relevance = {"exacto": 0, "prefijo": 1, "subcadena": 2, "frase": 3}
+        deduped.sort(key=lambda r: (r["page"], relevance.get(r["match_type"].split()[0], 4), r["source"]))
 
         return {
             "query": query,

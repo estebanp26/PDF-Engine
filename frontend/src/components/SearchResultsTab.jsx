@@ -29,9 +29,13 @@ export default function SearchResultsTab({
 
       <div className="space-y-2.5">
         {results.map((item, idx) => {
-          const term = item.token_searched || item.matched_term || searchQuery;
-          // Simple highlight regex
-          const parts = item.snippet.split(new RegExp(`(${term})`, 'gi'));
+          const matchedWord = item.matched_term || item.token_searched || searchQuery;
+          const safeWord = (item.matched_term || searchQuery || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const safeQuery = (searchQuery || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const highlightPattern = safeWord || safeQuery;
+          const parts = highlightPattern
+            ? item.snippet.split(new RegExp(`(${highlightPattern})`, 'gi'))
+            : [item.snippet];
 
           return (
             <div
@@ -50,20 +54,25 @@ export default function SearchResultsTab({
                   </span>
 
                   <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
-                    Término: "{term}" ({item.match_type})
+                    {item.match_type === 'prefijo'
+                      ? `"${item.matched_term}" (prefijo de "${searchQuery}")`
+                      : item.match_type === 'subcadena'
+                      ? `"${item.matched_term}" (contiene "${searchQuery}")`
+                      : `"${item.matched_term || matchedWord}" (${item.match_type})`}
                   </span>
                 </div>
 
                 <div className="text-xs text-slate-600 dark:text-slate-300 font-sans leading-relaxed">
-                  {parts.map((p, pIdx) => 
-                    p.toLowerCase() === term.toLowerCase() ? (
+                  {parts.map((p, pIdx) => {
+                    const isMatch = highlightPattern && new RegExp(`^(${highlightPattern})$`, 'i').test(p);
+                    return isMatch ? (
                       <mark key={pIdx} className="bg-amber-200 dark:bg-amber-800/80 text-amber-950 dark:text-amber-100 px-1 py-0.5 rounded font-semibold">
                         {p}
                       </mark>
                     ) : (
                       <span key={pIdx}>{p}</span>
-                    )
-                  )}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -71,7 +80,7 @@ export default function SearchResultsTab({
                 onClick={() => {
                   const coords = [item.x0, item.y0, item.x1, item.y1];
                   const rects = coords.every(c => c !== null && c !== undefined) ? coords : null;
-                  onJumpToPage(item.page, term, rects);
+                  onJumpToPage(item.page, item.matched_term || matchedWord, rects);
                 }}
                 className="shrink-0 flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-medium rounded-md transition"
               >

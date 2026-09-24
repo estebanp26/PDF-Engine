@@ -81,3 +81,21 @@ def test_mixed_image_document(tmp_path):
     # digital keyword searchable
     res = SearchEngine.search(doc, "NIT_999_TEST")
     assert res["total_matches"] >= 1
+
+
+def test_prefix_search_incomplete_word(tmp_path):
+    """Searching for 'doc' must match words like 'DOCUMENTO' or 'doctor'."""
+    pdf = make_digital_pdf(str(tmp_path / "prefix.pdf"), pages=2, keywords=["DOCUMENTO", "DOCTOR"])
+    doc = _doc_text(pdf)
+    res = SearchEngine.search(doc, "doc")
+    assert res["total_matches"] >= 2
+    assert any(r["match_type"] == "prefijo" and "doc" in r["matched_term"].lower() for r in res["results"])
+
+
+def test_substring_search(tmp_path):
+    """Searching for internal substring 'operacion' matches 'OPERACIONES'."""
+    pdf = make_digital_pdf(str(tmp_path / "sub.pdf"), pages=2, keywords=["OPERACIONES"])
+    doc = _doc_text(pdf)
+    res = SearchEngine.search(doc, "operacion")
+    assert res["total_matches"] >= 2
+    assert any("operacion" in r["matched_term"].lower() for r in res["results"])
