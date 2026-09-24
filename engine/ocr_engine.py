@@ -4,13 +4,46 @@ from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ProcessPoolExecutor
 
 import pytesseract
-from PIL import Image, ImageOps, ImageFilter
+import re
+from PIL import Image, ImageOps, ImageFilter, ImageDraw
 
 # Tesseract standard optimization parameters for speed & Spanish/English recognition
 TESSERACT_CONFIG = "--oem 1 --psm 3 -l spa+eng"
 
 # Minimum word length stored in OCR box results (filters tesseract noise tokens)
 MIN_WORD_LEN = 2
+
+
+def clean_ocr_text(raw_text: str) -> str:
+    """Clean common OCR noise, margin artifacts, and letter confusions in Spanish docs."""
+    replacements = [
+        (r'\bFacha\b', 'Fecha'),
+        (r'\bGestlon\b', 'Gestión'),
+        (r'\bDisgnostico\b', 'Diagnóstico'),
+        (r'\bPaclente\b', 'Paciente'),
+        (r'\bextemo\b', 'externo'),
+        (r'\btranstorÁcico\b', 'transtorácico'),
+        (r'\belectrocardiogrÁfico\b', 'electrocardiográfico'),
+        (r'\bCONSA[NÑQ][UÚ]O\b', 'CONSALUD'),
+        (r'\bFIDUPREVISORA\s+S\.?A\b', 'FIDUPREVISORA S.A.'),
+    ]
+    lines = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Drop lines that are purely symbol/edge noise
+        alnum = sum(1 for c in line if c.isalnum())
+        if alnum < 2 and len(line) > 1:
+            continue
+        # Strip long streaks of symbols
+        line = re.sub(r'[\=\|\>\<\_\~]{2,}', '', line).strip()
+        for pat, rep in replacements:
+            line = re.sub(pat, rep, line, flags=re.IGNORECASE)
+        line = re.sub(r'\s+', ' ', line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, float]:
@@ -41,6 +74,16 @@ def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, flo
         img = img.resize((int(orig_w * ratio), int(orig_h * ratio)), Image.Resampling.BICUBIC)
 
     gray = ImageOps.grayscale(img)
+
+    # Suppress outer 1.2% border shadows and scanner edges
+    gw, gh = gray.size
+    bx = max(2, int(gw * 0.012))
+    by = max(2, int(gh * 0.012))
+    draw = ImageDraw.Draw(gray)
+    draw.rectangle([0, 0, gw, by], fill=255)
+    draw.rectangle([0, gh - by, gw, gh], fill=255)
+    draw.rectangle([0, 0, bx, gh], fill=255)
+    draw.rectangle([gw - bx, 0, gw, gh], fill=255)
 
     # Safe autocontrast with cutoff=0 preserves fine table text without clipping
     contrasted = ImageOps.autocontrast(gray, cutoff=0)
@@ -108,7 +151,8 @@ def ocr_single_image_worker(image_bytes: bytes, image_id: str = "") -> Dict[str,
                 l_num = data.get("line_num", [0])[i]
                 lines.setdefault((b_num, p_num, l_num), []).append(w)
 
-            cleaned_text = "\n".join(" ".join(words) for _, words in sorted(lines.items())).strip()
+            raw_text = "\n".join(" ".join(words) for _, words in sorted(lines.items())).strip()
+            cleaned_text = clean_ocr_text(raw_text)
 
             return {
                 "id": image_id,

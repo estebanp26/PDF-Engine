@@ -162,7 +162,7 @@ export default function AiExtractorTab({
       </div>
 
       {/* Configuration Area */}
-      <div className="bg-slate-50 dark:bg-slate-850 p-4 rounded-lg border border-slate-200 dark:border-slate-800">
+      <div className="bg-slate-50 dark:bg-slate-800 p-4 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <Brain className="w-5 h-5 text-purple-600 dark:text-purple-400" />
@@ -285,7 +285,7 @@ export default function AiExtractorTab({
         <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
-              <tr className="bg-slate-50 dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 uppercase font-semibold">
+              <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 uppercase font-semibold">
                 <th className="py-2.5 px-4 w-1/3">Campo</th>
                 <th className="py-2.5 px-4 w-1/2">Valor Extraído</th>
                 <th className="py-2.5 px-4 text-right">Acción</th>
@@ -304,7 +304,7 @@ export default function AiExtractorTab({
                   const isCopied = copiedKey === field;
 
                   return (
-                    <tr key={field} className="hover:bg-slate-50/70 dark:hover:bg-slate-850/50 transition">
+                    <tr key={field} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/60 transition">
                       <td className="py-2.5 px-4 font-semibold text-slate-800 dark:text-slate-200">
                         {field}
                       </td>
@@ -316,7 +316,7 @@ export default function AiExtractorTab({
                       <td className="py-2.5 px-4 text-right">
                         <button
                           onClick={() => handleCopyValue(field, val)}
-                          className="px-2.5 py-1 text-[11px] font-medium border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 rounded inline-flex items-center gap-1 text-slate-700 dark:text-slate-300 transition"
+                          className="px-2.5 py-1 text-[11px] font-medium border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded inline-flex items-center gap-1 text-slate-700 dark:text-slate-300 transition"
                         >
                           {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                           <span>{isCopied ? 'Copiado' : 'Copiar'}</span>
