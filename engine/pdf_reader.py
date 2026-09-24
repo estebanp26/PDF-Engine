@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import re
 from collections import OrderedDict
 from typing import List, Dict, Any, Optional, Callable
 
@@ -115,13 +116,17 @@ class PDFEngineReader:
                 norm = normalize_text(w_text)
                 if len(norm) < 2:
                     continue
-                word_locations.setdefault(norm, []).append({
+                record = {
                     "page": page_num,
                     "src": "text",
                     "x0": round(x0, 2), "y0": round(y0, 2),
                     "x1": round(x1, 2), "y1": round(y1, 2),
                     "word": w_text,
-                })
+                }
+                word_locations.setdefault(norm, []).append(record)
+                clean = re.sub(r'^[^\w]+|[^\w]+$', '', norm)
+                if clean != norm and len(clean) >= 2:
+                    word_locations.setdefault(clean, []).append(record)
 
             # Embedded image detection
             image_list = page.get_images(full=True)
@@ -270,6 +275,13 @@ class PDFEngineReader:
                     _register_ocr_boxes(word_locations, img["id"], page_num, "image_ocr",
                                         img["id"], img_res["boxes"], _map_image_box_to_page,
                                         ocr_meta.get(img["id"]))
+
+            # For scanned pages without a full render (e.g. dominant embedded image),
+            # synthesize page-level OCR text so downstream search, preview, and AI see it.
+            if p["is_scanned"] and not p["ocr_text"]:
+                img_texts = [img["ocr_text"] for img in p["images"] if img.get("ocr_text")]
+                if img_texts:
+                    p["ocr_text"] = "\n\n".join(img_texts)
         profiler.end_lap("indexing")
 
         report("finalizing", 95)
@@ -338,7 +350,7 @@ def _register_ocr_boxes(word_locations, source_id, page, src_label, image_id, bo
         if len(norm) < 2:
             continue
         coords = mapper(box, meta)
-        word_locations.setdefault(norm, []).append({
+        record = {
             "page": page,
             "src": src_label,
             "image_id": image_id,
@@ -347,4 +359,8 @@ def _register_ocr_boxes(word_locations, source_id, page, src_label, image_id, bo
             "x1": coords[2] if coords else None,
             "y1": coords[3] if coords else None,
             "word": box["text"],
-        })
+        }
+        word_locations.setdefault(norm, []).append(record)
+        clean = re.sub(r'^[^\w]+|[^\w]+$', '', norm)
+        if clean != norm and len(clean) >= 2:
+            word_locations.setdefault(clean, []).append(record)

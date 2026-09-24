@@ -48,7 +48,10 @@ class AIExtractor:
             all_text = []
             pages_used = []
             for p in pages:
-                content = p.get("text", "") or p.get("ocr_text", "")
+                content = (p.get("text", "") or p.get("ocr_text", "")).strip()
+                if not content:
+                    img_texts = [img.get("ocr_text", "") for img in p.get("images", []) if img.get("ocr_text")]
+                    content = "\n".join(img_texts).strip()
                 if content:
                     all_text.append(f"--- PÁGINA {p['page']} ---\n{content}")
                     pages_used.append(p["page"])
@@ -80,7 +83,11 @@ class AIExtractor:
         top_pages = scores[:4]
         top_page_nums = {x[1] for x in top_pages}
         if 1 not in top_page_nums and len(pages) > 0:
-            top_pages.append((0, 1, pages[0].get("text", "") or pages[0].get("ocr_text", "")))
+            first_p = pages[0]
+            first_txt = (first_p.get("text", "") or first_p.get("ocr_text", "")).strip()
+            if not first_txt:
+                first_txt = "\n".join(img.get("ocr_text", "") for img in first_p.get("images", []) if img.get("ocr_text")).strip()
+            top_pages.append((0, 1, first_txt))
 
         top_pages.sort(key=lambda x: x[1])
 
@@ -113,7 +120,7 @@ class AIExtractor:
                         "stream": False,
                         "format": "json",
                         "keep_alive": "10m",
-                        "options": {"temperature": 0.1, "num_predict": 120},
+                        "options": {"temperature": 0.1, "num_predict": 400},
                     },
                 )
                 if res.status_code == 200:
@@ -129,6 +136,13 @@ class AIExtractor:
                         try:
                             return json.loads(clean_json), None
                         except json.JSONDecodeError:
+                            start_idx = clean_json.find('{')
+                            end_idx = clean_json.rfind('}')
+                            if start_idx != -1 and end_idx > start_idx:
+                                try:
+                                    return json.loads(clean_json[start_idx:end_idx + 1]), None
+                                except json.JSONDecodeError:
+                                    pass
                             return {}, "El modelo devolvió JSON inválido."
                 return {}, f"Ollama error {res.status_code}: {res.text}"
         except Exception as e:

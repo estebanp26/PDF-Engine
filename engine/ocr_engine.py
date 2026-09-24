@@ -42,18 +42,18 @@ def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, flo
 
     gray = ImageOps.grayscale(img)
 
-    # Auto-contrast is cheap and effective for yellow/dark backgrounds
-    contrasted = ImageOps.autocontrast(gray, cutoff=2)
+    # Safe autocontrast with cutoff=0 preserves fine table text without clipping
+    contrasted = ImageOps.autocontrast(gray, cutoff=0)
 
-    # Mild sharpening for faded scans; only ~1ms for 2000px images
-    sharpened = contrasted.filter(ImageFilter.UnsharpMask(radius=1.5, percent=150, threshold=3))
+    # Gentle unsharp mask for clarity without noise amplification
+    sharpened = contrasted.filter(ImageFilter.UnsharpMask(radius=1.0, percent=80, threshold=2))
 
     sw, sh = sharpened.size
     return sharpened, (sw / orig_w if orig_w else 1.0), (sh / orig_h if orig_h else 1.0)
 
 
-def _words_from_tesseract_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Flatten pytesseract.image_to_data output into per-word records (processed px)."""
+def _words_from_tesseract_data(data: Dict[str, Any], sx: float = 1.0, sy: float = 1.0) -> List[Dict[str, Any]]:
+    """Flatten pytesseract.image_to_data output into per-word records (scaled back to native input px)."""
     boxes: List[Dict[str, Any]] = []
     n = len(data.get("text", []))
     for i in range(n):
@@ -74,10 +74,10 @@ def _words_from_tesseract_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         boxes.append({
             "text": word,
             "conf": conf,
-            "x0": left,
-            "y0": top,
-            "x1": left + w,
-            "y1": top + h,
+            "x0": int(round(left / sx)),
+            "y0": int(round(top / sy)),
+            "x1": int(round((left + w) / sx)),
+            "y1": int(round((top + h) / sy)),
         })
     return boxes
 
@@ -90,22 +90,25 @@ def ocr_single_image_worker(image_bytes: bytes, image_id: str = "") -> Dict[str,
     """
     try:
         with Image.open(io.BytesIO(image_bytes)) as pil_img:
-            processed, _, _ = preprocess_image_antitodo(pil_img)
+            processed, sx, sy = preprocess_image_antitodo(pil_img)
             data = pytesseract.image_to_data(
                 processed, config=TESSERACT_CONFIG, output_type=pytesseract.Output.DICT
             )
-            boxes = _words_from_tesseract_data(data)
+            boxes = _words_from_tesseract_data(data, sx, sy)
 
-            # Reconstruct paragraphs/line text from box order
-            lines: Dict[int, List[Tuple[int, str]]] = {}
-            for b in boxes:
-                row = int(b["y0"] // 12)
-                lines.setdefault(row, []).append((b["x0"], b["text"]))
-            text = ""
-            for row in sorted(lines):
-                ordered = [w for _, w in sorted(lines[row], key=lambda t: t[0])]
-                text += " ".join(ordered) + "\n"
-            cleaned_text = text.strip()
+            # Reconstruct reading order using Tesseract's native (block, par, line) hierarchy
+            lines: Dict[Tuple[int, int, int], List[str]] = {}
+            for i in range(len(data.get("text", []))):
+                w = (data.get("text") or [""])[i]
+                w = (w or "").strip()
+                if not w:
+                    continue
+                b_num = data.get("block_num", [0])[i]
+                p_num = data.get("par_num", [0])[i]
+                l_num = data.get("line_num", [0])[i]
+                lines.setdefault((b_num, p_num, l_num), []).append(w)
+
+            cleaned_text = "\n".join(" ".join(words) for _, words in sorted(lines.items())).strip()
 
             return {
                 "id": image_id,

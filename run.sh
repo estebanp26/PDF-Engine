@@ -34,8 +34,8 @@ if ! "$VENV_PYTHON" -c "import fastapi, uvicorn" 2>/dev/null; then
     fi
 fi
 
-# 2. Build React + Vite frontend if dist is not built
-if [ ! -d "$DIR/frontend/dist" ]; then
+# 2. Build React + Vite frontend if dist is not built or src was updated
+if [ ! -d "$DIR/frontend/dist" ] || [ "$DIR/frontend/src" -nt "$DIR/frontend/dist/index.html" ]; then
     echo "[*] Compilando frontend React + Vite + Tailwind..."
     cd "$DIR/frontend"
     npm install
