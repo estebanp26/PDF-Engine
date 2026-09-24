@@ -1,6 +1,11 @@
 import asyncio
 import json
 import os
+
+# Prevent OpenMP thread contention across parallel OCR worker processes
+os.environ["OMP_THREAD_LIMIT"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import re
 import shutil
 import time
@@ -175,7 +180,7 @@ async def get_system_status():
     return {
         "status": "online",
         "cpu_cores": os.cpu_count() or 6,
-        "ocr_engine": f"Tesseract 5.x (pool ~{(os.cpu_count() or 4 + 1) // 2} workers)",
+        "ocr_engine": f"Tesseract 5.x (pool ~{min(10, max(1, (os.cpu_count() or 4) - 1))} workers, OMP isolated)",
         "ai_engine": "Qwen 2.5 via Ollama",
         "available_models": models,
         "default_model": default_model,

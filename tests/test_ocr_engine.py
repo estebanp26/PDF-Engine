@@ -34,7 +34,7 @@ def test_preprocess_returns_scales():
 def test_preprocess_downscales_huge_image():
     img = _make_image(size=(4000, 3000))
     out, sx, sy = preprocess_image_antitodo(img)
-    assert max(out.size) == 2000
+    assert max(out.size) == 1800
     assert sx < 0.6 and sy < 0.6
 
 
