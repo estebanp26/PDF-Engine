@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Header from './components/Header';
-import KpiStrip from './components/KpiStrip';
+import DropZone from './components/DropZone';
+import DocumentHeader from './components/DocumentHeader';
 import SearchBar from './components/SearchBar';
 import Sidebar from './components/Sidebar';
 import AiExtractorTab from './components/AiExtractorTab';
@@ -29,24 +30,28 @@ export default function App() {
 
   // AI Extraction State
   const [targetFields, setTargetFields] = useState([
-    "Número de Factura",
-    "Proveedor Autorizado",
-    "NIT",
-    "Fecha de Emisión",
-    "Valor Total a Pagar",
-    "Responsable"
+    "Nombre del Paciente",
+    "Documento de Identidad",
+    "Entidad Solicitante",
+    "Fecha de Gestión",
+    "Número de Orden",
+    "Prestador Asignado",
+    "Procedimientos o Exámenes Médicos",
+    "Teléfono"
   ]);
   const [aiResult, setAiResult] = useState(null);
   const [loadingAi, setLoadingAi] = useState(false);
 
-  // AI Question-Answering State
+  // AI Q&A State
   const [askResult, setAskResult] = useState(null);
   const [askLoading, setAskLoading] = useState(false);
 
-  // System & Job Progress State
+  // System & Telemetry State
   const [systemStatus, setSystemStatus] = useState(null);
+
+  // Async document processing job state
   const [docJobId, setDocJobId] = useState(null);
-  const [progress, setProgress] = useState(null);
+  const [progress, setProgress] = useState(null); // {stage, percent, ...}
 
   const fileInputRef = useRef(null);
 
@@ -119,7 +124,7 @@ export default function App() {
     };
 
     const timer = setInterval(poll, 400);
-    poll(); // immediate first check
+    poll();
     return () => { cancelled = true; clearInterval(timer); };
   }, [docJobId]);
 
@@ -129,18 +134,33 @@ export default function App() {
     if (!file) return;
     const formData = new FormData();
     formData.append('file', file);
-    setProgress({ percent: 1 });
-    await loadDocumentJob('/api/upload', { method: 'POST', body: formData });
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    formData.append('run_ocr', 'true');
+    await loadDocumentJob('/api/upload', {
+      method: 'POST',
+      body: formData
+    });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleFileDrop = (file) => {
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('run_ocr', 'true');
+    loadDocumentJob('/api/upload', {
+      method: 'POST',
+      body: formData
+    });
   };
 
   // Load sample benchmark
   const handleLoadBenchmark = async () => {
-    setProgress({ percent: 1 });
     await loadDocumentJob('/api/load-sample', { method: 'POST' });
   };
 
-  // Document loaded helper
+  // Post-upload document registration
   const handleDocumentLoaded = (data) => {
     setDocumentData(data);
     setActivePage(1);
@@ -150,9 +170,21 @@ export default function App() {
     setSearchQuery('');
     setAiResult(null);
     setAskResult(null);
+    setActiveTab('viewer');
   };
 
-  // Perform multi-token search
+  const handleCloseDocument = () => {
+    setDocumentData(null);
+    setSearchResult(null);
+    setHighlightQuery('');
+    setHighlightRects(null);
+    setSearchQuery('');
+    setAiResult(null);
+    setAskResult(null);
+    setActivePage(1);
+  };
+
+  // Lexical Search
   const handleSearch = async () => {
     const q = searchQuery.trim();
     if (!q) {
@@ -165,6 +197,7 @@ export default function App() {
       alert('Carga un documento PDF primero.');
       return;
     }
+
     setSearching(true);
     try {
       const res = await fetch('/api/search', {
@@ -249,7 +282,7 @@ export default function App() {
         setDarkMode={setDarkMode}
         onLoadBenchmark={handleLoadBenchmark}
         onUploadClick={() => fileInputRef.current?.click()}
-        systemStatus={systemStatus}
+        documentData={documentData}
       />
 
       <input
@@ -263,138 +296,149 @@ export default function App() {
       {/* Main Container */}
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-6">
 
-        {/* Telemetry KPI Strip */}
-        <KpiStrip
-          documentData={documentData}
-          aiResult={aiResult}
-        />
-
-        {/* Omnichannel Search Bar */}
-        <SearchBar
-          searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
-          onSearch={handleSearch}
-          searchResult={searchResult}
-          searching={searching}
-        />
-
-        {/* Workspace Two-Column Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6 items-start">
-
-          {/* Left Column: Page Navigator Sidebar */}
-          <Sidebar
-            pages={documentData?.pages || []}
-            activePage={activePage}
-            onSelectPage={(p) => {
-              setActivePage(p);
-              setActiveTab('viewer');
-            }}
-            matchedPages={searchResult?.matched_pages || []}
+        {!documentData ? (
+          /* Drag & Drop Zone when no document is active */
+          <DropZone
+            onFileSelected={handleFileDrop}
+            onLoadBenchmark={handleLoadBenchmark}
           />
+        ) : (
+          /* Active Document Workspace */
+          <>
+            {/* Minimal Document Banner */}
+            <DocumentHeader
+              documentData={documentData}
+              onClose={handleCloseDocument}
+            />
 
-          {/* Right Column: Tabbed Content Area */}
-          <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-sm min-h-[550px] flex flex-col transition">
+            {/* Omnichannel Search Bar */}
+            <SearchBar
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              onSearch={handleSearch}
+              searchResult={searchResult}
+              searching={searching}
+            />
 
-            {/* Tab Navigation Bar */}
-            <nav className="flex flex-wrap border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-850 px-4 gap-1">
-              <button
-                onClick={() => setActiveTab('ai')}
-                className={`py-3 px-4 text-xs font-semibold border-b-2 transition ${
-                  activeTab === 'ai'
-                    ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
-                    : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                }`}
-              >
-                Extracción de Valores (IA)
-              </button>
+            {/* Workspace Two-Column Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6 items-start">
 
-              <button
-                onClick={() => setActiveTab('viewer')}
-                className={`py-3 px-4 text-xs font-semibold border-b-2 transition ${
-                  activeTab === 'viewer'
-                    ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
-                    : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                }`}
-              >
-                Visor de Página ({activePage})
-              </button>
+              {/* Left Column: Page Navigator Sidebar */}
+              <Sidebar
+                pages={documentData?.pages || []}
+                activePage={activePage}
+                onSelectPage={(p) => {
+                  setActivePage(p);
+                  setActiveTab('viewer');
+                }}
+                matchedPages={searchResult?.matched_pages || []}
+              />
 
-              <button
-                onClick={() => setActiveTab('search')}
-                className={`py-3 px-4 text-xs font-semibold border-b-2 transition flex items-center gap-1.5 ${
-                  activeTab === 'search'
-                    ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
-                    : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                }`}
-              >
-                <span>Resultados de Búsqueda</span>
-                {searchResult?.total_matches > 0 && (
-                  <span className="w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-[10px] font-bold flex items-center justify-center">
-                    {searchResult.total_matches}
-                  </span>
-                )}
-              </button>
+              {/* Right Column: Tabbed Content Area */}
+              <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xs min-h-[550px] flex flex-col transition">
 
-              <button
-                onClick={() => setActiveTab('gallery')}
-                className={`py-3 px-4 text-xs font-semibold border-b-2 transition ${
-                  activeTab === 'gallery'
-                    ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
-                    : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                }`}
-              >
-                Imágenes & OCR
-              </button>
-            </nav>
+                {/* Tab Navigation Bar */}
+                <nav className="flex flex-wrap border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-4 gap-1">
+                  <button
+                    onClick={() => setActiveTab('viewer')}
+                    className={`py-3 px-4 text-xs font-semibold border-b-2 transition ${
+                      activeTab === 'viewer'
+                        ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
+                        : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Visor de Página ({activePage})
+                  </button>
 
-            {/* Tab Panes */}
-            <div className="p-4 sm:p-6 flex-1">
-              {activeTab === 'ai' && (
-                <AiExtractorTab
-                  targetFields={targetFields}
-                  setTargetFields={setTargetFields}
-                  onRunAi={handleRunAi}
-                  aiResult={aiResult}
-                  loadingAi={loadingAi}
-                  models={systemStatus?.available_models}
-                  onAsk={handleAsk}
-                  askResult={askResult}
-                  askLoading={askLoading}
-                  onAskJumpToPage={handleJumpToPage}
-                />
-              )}
+                  <button
+                    onClick={() => setActiveTab('ai')}
+                    className={`py-3 px-4 text-xs font-semibold border-b-2 transition ${
+                      activeTab === 'ai'
+                        ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
+                        : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Extracción de Valores (IA)
+                  </button>
 
-              {activeTab === 'viewer' && (
-                <ViewerTab
-                  activePage={activePage}
-                  totalPages={documentData?.total_pages || 1}
-                  onPrevPage={() => setActivePage(p => Math.max(1, p - 1))}
-                  onNextPage={() => setActivePage(p => Math.min(documentData?.total_pages || 1, p + 1))}
-                  highlightQuery={highlightQuery}
-                  highlightRects={highlightRects}
-                  onClearHighlight={() => { setHighlightQuery(''); setHighlightRects(null); }}
-                />
-              )}
+                  <button
+                    onClick={() => setActiveTab('search')}
+                    className={`py-3 px-4 text-xs font-semibold border-b-2 transition flex items-center gap-1.5 ${
+                      activeTab === 'search'
+                        ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
+                        : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <span>Resultados de Búsqueda</span>
+                    {searchResult?.total_matches > 0 && (
+                      <span className="w-5 h-5 rounded-full bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-[10px] font-bold flex items-center justify-center">
+                        {searchResult.total_matches}
+                      </span>
+                    )}
+                  </button>
 
-              {activeTab === 'search' && (
-                <SearchResultsTab
-                  searchResults={searchResult}
-                  onJumpToPage={handleJumpToPage}
-                  searchQuery={searchQuery}
-                />
-              )}
+                  <button
+                    onClick={() => setActiveTab('gallery')}
+                    className={`py-3 px-4 text-xs font-semibold border-b-2 transition ${
+                      activeTab === 'gallery'
+                        ? 'border-blue-600 text-blue-700 dark:text-blue-400 bg-white dark:bg-slate-900'
+                        : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Imágenes & OCR
+                  </button>
+                </nav>
 
-              {activeTab === 'gallery' && (
-                <GalleryTab
-                  pages={documentData?.pages || []}
-                  onJumpToPage={handleJumpToPage}
-                />
-              )}
+                {/* Tab Panes */}
+                <div className="p-4 sm:p-6 flex-1">
+                  {activeTab === 'viewer' && (
+                    <ViewerTab
+                      activePage={activePage}
+                      totalPages={documentData?.total_pages || 1}
+                      onPrevPage={() => setActivePage(p => Math.max(1, p - 1))}
+                      onNextPage={() => setActivePage(p => Math.min(documentData?.total_pages || 1, p + 1))}
+                      highlightQuery={highlightQuery}
+                      highlightRects={highlightRects}
+                      onClearHighlight={() => { setHighlightQuery(''); setHighlightRects(null); }}
+                    />
+                  )}
+
+                  {activeTab === 'ai' && (
+                    <AiExtractorTab
+                      targetFields={targetFields}
+                      setTargetFields={setTargetFields}
+                      onRunAi={handleRunAi}
+                      aiResult={aiResult}
+                      loadingAi={loadingAi}
+                      models={systemStatus?.available_models}
+                      onAsk={handleAsk}
+                      askResult={askResult}
+                      askLoading={askLoading}
+                      onAskJumpToPage={handleJumpToPage}
+                    />
+                  )}
+
+                  {activeTab === 'search' && (
+                    <SearchResultsTab
+                      searchResults={searchResult}
+                      onJumpToPage={handleJumpToPage}
+                      searchQuery={searchQuery}
+                    />
+                  )}
+
+                  {activeTab === 'gallery' && (
+                    <GalleryTab
+                      pages={documentData?.pages || []}
+                      onJumpToPage={handleJumpToPage}
+                    />
+                  )}
+                </div>
+
+              </section>
+
             </div>
-
-          </section>
-
-        </div>
+          </>
+        )}
 
       </main>
 

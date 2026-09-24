@@ -62,4 +62,7 @@ echo "======================================================================"
 echo "👉 Abre tu navegador en: http://localhost:8001"
 echo "======================================================================"
 
+export OMP_THREAD_LIMIT=1
+export OMP_NUM_THREADS=1
+
 exec "$VENV_PYTHON" -m uvicorn server:app --host 0.0.0.0 --port 8001 --reload

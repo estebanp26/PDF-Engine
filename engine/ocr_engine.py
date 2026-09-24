@@ -1,16 +1,31 @@
 import io
 import os
+
+# Isolate OpenMP threads to 1 per process to eliminate kernel CPU thread thrashing
+# and multi-process lock contention when running parallel Tesseract workers.
+os.environ["OMP_THREAD_LIMIT"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ProcessPoolExecutor
 
 import pytesseract
-from PIL import Image, ImageOps, ImageFilter
+import re
+from PIL import Image, ImageOps, ImageFilter, ImageDraw
 
 # Tesseract standard optimization parameters for speed & Spanish/English recognition
 TESSERACT_CONFIG = "--oem 1 --psm 3 -l spa+eng"
 
 # Minimum word length stored in OCR box results (filters tesseract noise tokens)
 MIN_WORD_LEN = 2
+
+
+from engine.vocabulary_cleaner import vocab_cleaner
+
+
+def clean_ocr_text(raw_text: str) -> str:
+    """Clean common OCR noise, margin artifacts, and correct corrupted vocabulary."""
+    return vocab_cleaner.clean_text_block(raw_text)
 
 
 def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, float]:
@@ -33,14 +48,24 @@ def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, flo
     max_dim = max(orig_w, orig_h)
     min_dim = min(orig_w, orig_h)
 
-    if max_dim > 2200:
-        ratio = 2000.0 / max_dim
+    if max_dim > 1800:
+        ratio = 1800.0 / max_dim
         img = img.resize((int(orig_w * ratio), int(orig_h * ratio)), Image.Resampling.BILINEAR)
     elif max_dim < 600 and min_dim > 50:
         ratio = 1000.0 / max_dim
         img = img.resize((int(orig_w * ratio), int(orig_h * ratio)), Image.Resampling.BICUBIC)
 
     gray = ImageOps.grayscale(img)
+
+    # Suppress outer 1.2% border shadows and scanner edges
+    gw, gh = gray.size
+    bx = max(2, int(gw * 0.012))
+    by = max(2, int(gh * 0.012))
+    draw = ImageDraw.Draw(gray)
+    draw.rectangle([0, 0, gw, by], fill=255)
+    draw.rectangle([0, gh - by, gw, gh], fill=255)
+    draw.rectangle([0, 0, bx, gh], fill=255)
+    draw.rectangle([gw - bx, 0, gw, gh], fill=255)
 
     # Safe autocontrast with cutoff=0 preserves fine table text without clipping
     contrasted = ImageOps.autocontrast(gray, cutoff=0)
@@ -82,12 +107,19 @@ def _words_from_tesseract_data(data: Dict[str, Any], sx: float = 1.0, sy: float 
     return boxes
 
 
+def _init_ocr_worker():
+    """Initializer for child processes in ProcessPoolExecutor."""
+    os.environ["OMP_THREAD_LIMIT"] = "1"
+    os.environ["OMP_NUM_THREADS"] = "1"
+
+
 def ocr_single_image_worker(image_bytes: bytes, image_id: str = "") -> Dict[str, Any]:
     """Worker executed inside the process pool for parallel OCR.
 
     Uses image_to_data (single Tesseract pass) so we get both the recognized
     text and per-word boxes used to build the coordinate index.
     """
+    _init_ocr_worker()
     try:
         with Image.open(io.BytesIO(image_bytes)) as pil_img:
             processed, sx, sy = preprocess_image_antitodo(pil_img)
@@ -108,7 +140,8 @@ def ocr_single_image_worker(image_bytes: bytes, image_id: str = "") -> Dict[str,
                 l_num = data.get("line_num", [0])[i]
                 lines.setdefault((b_num, p_num, l_num), []).append(w)
 
-            cleaned_text = "\n".join(" ".join(words) for _, words in sorted(lines.items())).strip()
+            raw_text = "\n".join(" ".join(words) for _, words in sorted(lines.items())).strip()
+            cleaned_text = clean_ocr_text(raw_text)
 
             return {
                 "id": image_id,
@@ -130,16 +163,17 @@ def ocr_single_image_worker(image_bytes: bytes, image_id: str = "") -> Dict[str,
 
 
 class FastOCREngine:
-    """Multi-process parallel OCR engine with configurable worker count.
+    """Multi-process parallel OCR engine with single-thread OpenMP isolation.
 
-    NOTE: Tesseract internally uses OpenMP threads too, so throwing every CPU
-    core at it rarely helps. The default (~2 workers per physical core budget)
-    is a sane starting point; tune with benchmark_ocr_tuning.py.
+    By pinning each Tesseract worker to a single OpenMP thread (OMP_NUM_THREADS=1),
+    we eliminate CPU core thrashing and context switching overhead. This allows
+    near-linear scaling with available CPU cores.
     """
 
     def __init__(self, max_workers: Optional[int] = None):
         cpus = os.cpu_count() or 4
-        self.max_workers = max_workers or min(12, max(1, (cpus + 1) // 2))
+        # Allocate up to (cpus - 1) workers capped at 10, leaving CPU headroom for API/OS.
+        self.max_workers = max_workers or min(10, max(1, cpus - 1))
 
     def process_batch(
         self,
@@ -162,7 +196,7 @@ class FastOCREngine:
 
         workers = min(self.max_workers, len(items))
         results: List[Dict[str, Any]] = []
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        with ProcessPoolExecutor(max_workers=workers, initializer=_init_ocr_worker) as executor:
             futures = [
                 executor.submit(ocr_single_image_worker, img_bytes, img_id)
                 for img_bytes, img_id in items
