@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import pytesseract
 import re
+import numpy as np
 from PIL import Image, ImageOps, ImageFilter, ImageDraw
 
 # Tesseract standard optimization parameters for speed & Spanish/English recognition
@@ -48,7 +49,9 @@ def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, flo
     max_dim = max(orig_w, orig_h)
     min_dim = min(orig_w, orig_h)
 
-    if max_dim > 1800:
+    # Only downscale truly huge pages (e.g. 3000+ px phone camera A4).
+    # NEVER shrink narrow tickets/receipts (orig_w < 1000) where width is critical for font resolution!
+    if max_dim > 2000 and orig_w >= 1000:
         ratio = 1800.0 / max_dim
         img = img.resize((int(orig_w * ratio), int(orig_h * ratio)), Image.Resampling.BILINEAR)
     elif max_dim < 600 and min_dim > 50:
@@ -57,10 +60,10 @@ def preprocess_image_antitodo(img: Image.Image) -> Tuple[Image.Image, float, flo
 
     gray = ImageOps.grayscale(img)
 
-    # Suppress outer 1.2% border shadows and scanner edges
+    # Suppress outer 0.8% border scanner shadows
     gw, gh = gray.size
-    bx = max(2, int(gw * 0.012))
-    by = max(2, int(gh * 0.012))
+    bx = max(2, int(gw * 0.008))
+    by = max(2, int(gh * 0.008))
     draw = ImageDraw.Draw(gray)
     draw.rectangle([0, 0, gw, by], fill=255)
     draw.rectangle([0, gh - by, gw, gh], fill=255)
@@ -141,6 +144,42 @@ def ocr_single_image_worker(image_bytes: bytes, image_id: str = "") -> Dict[str,
                 lines.setdefault((b_num, p_num, l_num), []).append(w)
 
             raw_text = "\n".join(" ".join(words) for _, words in sorted(lines.items())).strip()
+
+            # Fast header watermark / logo inspection pass:
+            # If the top of the image has content, perform local background subtraction
+            # to recover faint or matrix-stippled logos/watermarks (e.g. "Previsalud Semedical")
+            # that full-page layout segmentation drops as an isolated graphic.
+            header_h = min(int(pil_img.height * 0.16), 380)
+            if header_h >= 60:
+                header_crop = pil_img.crop((0, max(0, int(pil_img.height * 0.012)), pil_img.width, header_h))
+                gh = ImageOps.grayscale(header_crop)
+                blurred_bg = gh.filter(ImageFilter.GaussianBlur(radius=8))
+                diff = np.clip(255 - (np.array(blurred_bg, float) - np.array(gh, float)) * 3.5, 0, 255).astype(np.uint8)
+                norm_header = Image.fromarray(diff)
+
+                h_data = pytesseract.image_to_data(
+                    norm_header, config="--oem 1 --psm 11 -l spa+eng", output_type=pytesseract.Output.DICT
+                )
+                h_words = []
+                for idx in range(len(h_data.get("text", []))):
+                    hw = (h_data.get("text") or [""])[idx].strip()
+                    if len(hw) >= 3 and any(c.isalnum() for c in hw) and hw.lower() not in raw_text.lower():
+                        cleaned_hw = vocab_cleaner.correct_word(hw)
+                        h_words.append(cleaned_hw)
+                        hl = int(h_data["left"][idx])
+                        ht = int(h_data["top"][idx]) + int(pil_img.height * 0.012)
+                        hw_box = int(h_data["width"][idx])
+                        hh_box = int(h_data["height"][idx])
+                        boxes.insert(0, {
+                            "text": cleaned_hw,
+                            "conf": float(h_data.get("conf", [80])[idx]),
+                            "x0": hl, "y0": ht,
+                            "x1": hl + hw_box, "y1": ht + hh_box,
+                        })
+                if h_words:
+                    header_line = " ".join(h_words)
+                    raw_text = header_line + "\n" + raw_text
+
             cleaned_text = clean_ocr_text(raw_text)
 
             return {

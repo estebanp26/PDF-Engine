@@ -128,6 +128,15 @@ class PDFEngineReader:
                 clean = re.sub(r'^[^\w]+|[^\w]+$', '', norm)
                 if clean != norm and len(clean) >= 2:
                     word_locations.setdefault(clean, []).append(record)
+                for sub_token in re.split(r'[-/_\.:]+', clean):
+                    if len(sub_token) >= 2 and sub_token != clean:
+                        word_locations.setdefault(sub_token, []).append(record)
+                nodots = re.sub(r'[\.,]', '', clean)
+                if nodots.isdigit() and len(nodots) >= 4 and nodots != clean:
+                    word_locations.setdefault(nodots, []).append(record)
+                for num in re.findall(r'\d{6,12}', clean):
+                    if num != clean and num != nodots:
+                        word_locations.setdefault(num, []).append(record)
 
             # Embedded image detection
             image_list = page.get_images(full=True)
@@ -368,3 +377,17 @@ def _register_ocr_boxes(word_locations, source_id, page, src_label, image_id, bo
         corrected = normalize_text(vocab_cleaner.correct_word(clean))
         if corrected != clean and len(corrected) >= 2:
             word_locations.setdefault(corrected, []).append(record)
+
+        for sub_token in re.split(r'[-/_\.:]+', clean):
+            if len(sub_token) >= 2 and sub_token != clean:
+                word_locations.setdefault(sub_token, []).append(record)
+                sub_corr = normalize_text(vocab_cleaner.correct_word(sub_token))
+                if sub_corr != sub_token and len(sub_corr) >= 2:
+                    word_locations.setdefault(sub_corr, []).append(record)
+
+        nodots = re.sub(r'[\.,]', '', clean)
+        if nodots.isdigit() and len(nodots) >= 4 and nodots != clean:
+            word_locations.setdefault(nodots, []).append(record)
+        for num in re.findall(r'\d{6,12}', clean):
+            if num != clean and num != nodots:
+                word_locations.setdefault(num, []).append(record)

@@ -24,6 +24,8 @@ VOCABULARY_LIST = [
     "ecocardiograma", "transtoracico", "electrocardiograma", "electrocardiografico",
     "monitoreo", "continuo", "holter", "consulta", "urgencias", "hospitalizacion",
     "terapia", "tratamiento", "cirugia", "medicamento", "medicamentos", "dosis",
+    "losartan", "hidroclorotiazida", "hidroxido", "aluminio", "previsalud", "semedical",
+    "ceminsa", "coosalud", "sabanalarga",
 
     # Financial / Invoicing
     "factura", "proveedor", "cliente", "empresa", "subtotal", "descuento", "impuesto",
@@ -51,6 +53,9 @@ DISPLAY_FORMS: Dict[str, str] = {
     "miercoles": "miércoles", "sabado": "sábado", "anos": "años",
     "auxiliar": "Auxiliar", "administrativo": "Administrativo", "externo": "externo",
     "transcribe": "Transcribe", "prestador": "Prestador", "municipio": "Municipio",
+    "previsalud": "Previsalud", "semedical": "Semedical", "losartan": "Losartán",
+    "hidroclorotiazida": "Hidroclorotiazida", "hidroxido": "Hidróxido",
+    "ceminsa": "CEMINSA", "coosalud": "COOSALUD", "sabanalarga": "Sabanalarga",
 }
 
 def strip_accents(s: str) -> str:
@@ -95,6 +100,23 @@ class FastVocabCleaner:
             "transcribe": "transcribe",
             "auxlllar": "auxiliar",
             "administratlvo": "administrativo",
+            # Faint / matrix-stippled logo and watermark corrections
+            "emedica": "semedical",
+            "semedica": "semedical",
+            "sermedica": "semedical",
+            "somedia": "semedical",
+            "somedical": "semedical",
+            "comarcal": "semedical",
+            "comorira": "semedical",
+            "comedical": "semedical",
+            "provicalur": "previsalud",
+            "previaalud": "previsalud",
+            # Medications clipped by margin border
+            "sartan": "losartan",
+            "lojartan": "losartan",
+            "droclorotiazida": "hidroclorotiazida",
+            "hidrocloratiazida": "hidroclorotiazida",
+            "droxido": "hidroxido",
         }
 
     @staticmethod
