@@ -219,7 +219,13 @@
 }
 ```
 
-**Campos de cada resultado:** `page`, `source` (`text`/`ocr`/`image_ocr`), `source_label`, `token_searched`, `match_type` (`exacto`/`difuso (NN%)`/`frase`), `snippet`, `matched_term`, `image_id`, `x0/y0/x1/y1` (coordenadas en puntos del PDF o `null`). `search_latency_ms` lo añade `server.py`.
+**Campos de cada resultado:** `page`, `source` (`text`/`ocr`/`image_ocr`), `source_label`, `token_searched`, `match_type` (`exacto` / `prefijo` / `subcadena` / `difuso (NN%)` / `frase`), `snippet`, `matched_term`, `image_id`, `x0/y0/x1/y1` (coordenadas en puntos del PDF o `null`). `search_latency_ms` lo añade `server.py`.
+
+- `exacto`: Coincidencia directa en el índice de palabras (incluyendo normalización de tildes, mayúsculas y correcciones léxicas de `FastVocabCleaner`).
+- `prefijo`: Coincidencia por inicio de palabra / autocompletado para términos incompletos (ej. `"doc"` ➔ `"doctor"`, `"losart"` ➔ `"losartán"`).
+- `subcadena`: Coincidencia interna dentro de palabras para términos de longitud ≥ 3 (ej. `"miento"` ➔ `"medicamento"`).
+- `difuso (NN%)`: Fallback difuso mediante similitud difflib / Levenshtein (ratio ≥ 82%) para términos de longitud ≥ 4 sin coincidencias directas.
+- `frase`: Coincidencia de frases de múltiples palabras consecutivas en la misma página/fuente.
 
 ### 3.9 `POST /api/extract-ai`
 

@@ -34,7 +34,9 @@ Motor de procesamiento de documentos PDF con:
 
 - **Lectura digital con PyMuPDF** (extremo C): extrae texto y coordenadas por palabra en milisegundos.
 - **OCR inteligente "solo donde hace falta"** con Tesseract 5.x: las páginas con texto digital suficiente no se mandan a OCR; las páginas escaneadas se procesan con deduplicación (nunca se hace doble OCR del mismo contenido) y un pool paralelo de workers con preprocesado "Anti-Todo".
-- **Índice de búsqueda léxico preconstruido**: `palabra → {página, fuente, coordenadas x0/y0/x1/y1}` para texto digital, OCR de páginas escaneadas y OCR de imágenes embebidas. Soporta resaltado de cajas en el visor.
+- **Pase de alta frecuencia para logos y marcas de agua**: sustracción de fondo local con NumPy y pase `--psm 11` que recupera encabezados tenues, fuentes de matriz de punto o marcas de agua que el segmentador descarta como gráficos aislados.
+- **Normalización léxica especializada (`FastVocabCleaner`)**: diccionario para términos médicos, farmacéuticos, institucionales y financieros; corrección de artefactos de OCR y restitución de mayúsculas/minúsculas y tildes.
+- **Índice de búsqueda léxico multinivel preconstruido**: `palabra → {página, fuente, coordenadas x0/y0/x1/y1}` para texto digital, OCR de páginas escaneadas y OCR de imágenes embebidas. Soporta búsqueda exacta, por prefijo (palabras incompletas / predictivo), por subcadena, difusa (difflib ≥ 82%) y por frase, además de descomponer tokens compuestos (`CO9CA0101-LOSARTÁN`) e indexar números de identificación sin puntos (`1.043.589.150` ➔ `1043589150`) y códigos MRZ.
 - **Extracción de datos con IA local (Qwen 2.5 vía Ollama)**: extracción de campos con JSON estructurado y respuestas a preguntas con evidencia citada, página y nivel de confianza.
 - **Procesamiento por jobs con progreso en vivo** y **caché por SHA-256** de los últimos N documentos (LRU).
 
@@ -45,19 +47,21 @@ Los documentos PDF representan un desafío de procesamiento porque contienen inf
 - Hacer OCR **incondicional** de todas las páginas, duplicando trabajo y consumiendo tiempo y CPU.
 - Perder las **coordenadas de las palabras**, impidiendo resaltar coincidencias en la página.
 - Permitir la búsqueda solo sobre texto digital u OCR, pero no sobre ambos de forma unificada.
+- Perder texto tenue, sellos, marcas de agua y encabezados con poco contraste que los motores de OCR descartan como gráficos o ruido.
+- Fracasar en búsquedas de códigos compuestos o cédulas con puntos si el usuario busca el número continuo.
 - Depender de herramientas de visión pesadas (LLaVA/torch) o de servicios externos en la nube para la extracción de datos, con requisitos de hardware o conectividad elevados.
 
 ### Justificación
 
 Puede justificarse a partir de la decisión explícita registrada en el `README.md` y en los archivos de código:
 
-- El motor prioriza **velocidad y bajo consumo de recursos**: sin dependencias pesadas de visión en el runtime (el README declara *"Sin LLaVA. Sin AugLy en el runtime. Sin dependencias pesadas de visión (torch/numpy)"*).
+- El motor prioriza **velocidad y bajo consumo de recursos**: sin modelos pesados de visión (LLaVA/torch) en el runtime. Preprocesamiento ágil mediante Pillow y álgebra vectorial con NumPy.
 - La búsqueda y la extracción de datos con IA se resuelven con **modelos locales** (Ollama + Qwen 2.5), manteniendo los datos en la máquina, sin depender de servicios externos pagos.
 - El sistema combina un **motor lexicográfico** (rápido, determinista, con coordenadas) con un **modelo de lenguaje** (comprensión y extracción estructurada), de modo que el modelo solo recibe contexto podado y relevante.
 
 ### Objetivo general
 
-Construir un motor de procesamiento de PDFs que unifique extracción de texto digital, OCR de escaneos e imágenes, búsqueda léxica con coordenadas y extracción de datos con IA local, de forma rápida, sin dependencias de visión pesadas y ejecutable en una máquina doméstica con CPU modesta.
+Construir un motor de procesamiento de PDFs que unifique extracción de texto digital, OCR de escaneos e imágenes, detección de sellos/marcas de agua, búsqueda léxica multinivel con coordenadas y extracción de datos con IA local, de forma rápida, sin dependencias de visión pesadas y ejecutable en una máquina doméstica con CPU modesta.
 
 ### Objetivos específicos
 
@@ -65,11 +69,13 @@ Los siguientes objetivos se derivan de las características declaradas en el `RE
 
 1. Leer texto digital y coordenadas por palabra mediante PyMuPDF.
 2. OCR paralelo únicamente sobre contenido que lo requiera (páginas escaneadas e imágenes), con deduplicación para evitar trabajo doble.
-3. Construir un índice de búsqueda léxico con coordenadas para todo el contenido (digital + OCR).
-4. Buscar con tolerancia a tildes, mayúsculas y errores de OCR (búsqueda difusa).
-5. Extraer campos estructurados de un documento con un modelo de lenguaje local (Qwen 2.5).
-6. Responder preguntas sobre el documento con evidencia citada y nivel de confianza, sin inventar respuestas.
-7. Exponer una interfaz web (React + Vite + Tailwind) que permita subir documentos, ver progreso, navegar páginas con resaltado y visualizar resultados.
+3. Detectar tipografías tenues, sellos y marcas de agua mediante sustracción de fondo local y `--psm 11`.
+4. Limpiar y normalizar el texto OCR mediante diccionarios especializados (`FastVocabCleaner`).
+5. Construir un índice de búsqueda léxico con coordenadas espaciales, sub-tokens e identificadores normalizados.
+6. Buscar con soporte multinivel: exacto, prefijo (palabras incompletas), subcadena, difuso y frase.
+7. Extraer campos estructurados de un documento con un modelo de lenguaje local (Qwen 2.5).
+8. Responder preguntas sobre el documento con evidencia citada y nivel de confianza, sin inventar respuestas.
+9. Exponer una interfaz web (React + Vite + Tailwind) que permita subir documentos, ver progreso, navegar páginas con resaltado y visualizar resultados.
 
 ### Alcance
 
@@ -139,35 +145,45 @@ Los siguientes requerimientos funcionales se derivan **exclusivamente** de funci
 | **Resultado esperado** | Un ítem OCR por página escaneada (deduplicado), con texto y cajas por palabra. |
 | **Estado** | **Implementado** (verificado por `test_scanned_pdf_not_double_ocr`: 2 páginas → 2 ítems OCR). |
 
-| RF-04 | **Preprocesado "Anti-Todo" de imágenes OCR** |
+| RF-04 | **Preprocesado "Anti-Todo" y Pase de Logos/Marcas de Agua** |
 | --- | --- |
-| **Nombre** | Preprocesado adaptativo Anti-Todo |
-| **Descripción** | Re-escalado condicional (downscale si > 2200 px, upscale si < 600 px), conversión a escala de grises, autocontraste seguro y una máscara de enfoque suave antes de pasar la imagen a Tesseract. |
+| **Nombre** | Preprocesado adaptativo Anti-Todo y Detección de Logos |
+| **Descripción** | Escalado condicional con regla de preservación de tickets estrechos (solo escala hacia abajo si > 2000 px y ancho ≥ 1000 px, protegiendo fuentes de matriz de punto), supresión de sombras de escáner al 0.8% de los bordes, autocontraste adaptativo y máscara de enfoque. Adicionalmente, incluye un pase de alta frecuencia en encabezados con sustracción de fondo gaussiana (`diff = 255 - (bg - gray) * 3.5` con NumPy) y `--psm 11` para recuperar logos tenues, marcas de agua y textos punteados que la segmentación de página completa descartaría. |
 | **Actor** | Sistema (procesamiento). |
 | **Entrada** | Imagen PIL. |
-| **Proceso** | `preprocess_image_antitodo()` (ocr_engine.py:16-52). |
-| **Resultado esperado** | Imagen procesada y factores de escala `(sx, sy)` para mapear cajas al espacio original. |
-| **Estado** | **Implementado** (verificado por `test_preprocess_returns_scales`, `test_preprocess_downscales_huge_image`, `test_preprocess_upscales_small_image`). |
+| **Proceso** | `preprocess_image_antitodo()` y pase de encabezado en `ocr_single_image_worker()` (ocr_engine.py:16-182). |
+| **Resultado esperado** | Imagen procesada, factores de escala y extracción de texto de logotipos/marcas de agua con cajas de palabras recuperadas. |
+| **Estado** | **Implementado** (verificado por `test_preprocess_returns_scales`, `test_preprocess_downscales_huge_image`, `test_preprocess_upscales_small_image`, pruebas con tickets y documentos con logotipos). |
 
-| RF-05 | **Índice de búsqueda preconstruido con coordenadas** |
+| RF-05 | **Índice de búsqueda preconstruido con coordenadas y sub-tokens** |
 | --- | --- |
-| **Nombre** | Índice léxico palabra → coordenadas |
-| **Descripción** | Registrar cada palabra (digital u OCR) en `word_locations: palabra normalizada → [{página, fuente, coordenadas}]`. |
+| **Nombre** | Índice léxico palabra → coordenadas y descomposición |
+| **Descripción** | Registrar cada palabra (digital u OCR) en `word_locations: palabra normalizada → [{página, fuente, coordenadas}]`. Descompone automáticamente cadenas delimitadas (`CO9CA0101-LOSARTÁN`) para indexar tanto el identificador completo como cada sub-token (`losartan`, `co9ca0101`). Además, extrae e indexa números limpios sin puntuación a partir de identificadores con puntos (`1.043.589.150` ➔ `1043589150`, `32.848.952` ➔ `32848952`) y secuencias de 6–12 dígitos en líneas de códigos de barras / MRZ. |
 | **Actor** | Sistema (procesamiento). |
 | **Entrada** | Páginas procesadas (texto + OCR). |
-| **Proceso** | `pdf_reader.py:289-301` y `_register_ocr_boxes()` (pdf_reader.py:344-366). |
-| **Resultado esperado** | Diccionario `search_index` con `word_locations` y `pages_norm`. |
+| **Proceso** | `pdf_reader.py:128-139, 294-305` y `_register_ocr_boxes()` (pdf_reader.py:365-388). |
+| **Resultado esperado** | Diccionario `search_index` con `word_locations` (incluyendo sub-tokens y números limpios con sus cajas exactas en puntos de página) y `pages_norm`. |
 | **Estado** | **Implementado**. |
 
-| RF-06 | **Búsqueda multitérmino (exacto → normalizado → difuso → frase)** |
+| RF-06 | **Búsqueda multinivel (exacto ➔ prefijo ➔ subcadena ➔ difuso ➔ frase)** |
 | --- | --- |
-| **Nombre** | Búsqueda léxica con fallbacks |
-| **Descripción** | Dado un texto de consulta: (1) coincidencia exacta/normalizada sobre el índice; (2) coincidencia difusa con `difflib` para términos sin hits exactos (longitud ≥ 4, similitud ≥ 0.82); (3) coincidencia por frase (todos los términos en la misma página/fuente). Devuelve fragmento (snippet), página, fuente y coordenadas. |
+| **Nombre** | Búsqueda léxica jerárquica con autocompletado y fallbacks |
+| **Descripción** | Dado un texto de consulta, la búsqueda evalúa en orden jerárquico: (1) coincidencia exacta sobre el índice y correcciones léxicas; (2) coincidencia por prefijo / autocompletado para palabras incompletas (ej. `"doc"` ➔ `"doctor"`, `"losart"` ➔ `"losartán"`); (3) coincidencia de subcadena interna para términos de longitud ≥ 3; (4) coincidencia difusa con `difflib` para términos sin hits previos (longitud ≥ 4, similitud ≥ 0.82); (5) coincidencia por frase (todos los términos contiguos en la misma página/fuente). Devuelve fragmento (snippet), página, fuente, tipo de coincidencia y coordenadas espaciales `[x0, y0, x1, y1]`. |
 | **Actor** | Usuario final. |
 | **Entrada** | Consulta de texto. |
 | **Proceso** | `SearchEngine.search()` (engine/search_index.py:83-244). |
-| **Resultado esperado** | Lista `results` con `match_type` (exacto/difuso/frase), snippets y coordenadas, más `matched_pages`. |
-| **Estado** | **Implementado** (verificado por `test_exact_match_with_coords`, `test_case_insensitive`, `test_accent_insensitive`, `test_exact_priority_over_fuzzy`, `test_no_match_returns_empty`, `test_phrase_multitoken`, `test_multi_page_results`). |
+| **Resultado esperado** | Lista `results` con `match_type` (`exacto` / `prefijo` / `subcadena` / `difuso` / `frase`), snippets y coordenadas, más `matched_pages` y latencia en ms. |
+| **Estado** | **Implementado** (verificado por suite de pruebas y consultas en vivo). |
+
+| RF-06B | **Limpieza y normalización de vocabulario especializado (`FastVocabCleaner`)** |
+| --- | --- |
+| **Nombre** | Corrector y normalizador de vocabulario especializado |
+| **Descripción** | Mantener un catálogo de términos en dominios de salud (medicamentos, dosis, procedimientos), institucional, financiero y administrativo. Corregir errores fonéticos y ortográficos frecuentes producidos por OCR (ej. `somedia`/`comedical` ➔ `semedical`, `droclorotiazida` ➔ `hidroclorotiazida`, `sartan` ➔ `losartan`), y restituir la forma visual con mayúsculas/minúsculas y tildes originales. |
+| **Actor** | Sistema (procesamiento y búsqueda). |
+| **Entrada** | Palabras extraídas por OCR o términos de consulta. |
+| **Proceso** | `FastVocabCleaner.correct_word()` y diccionarios de `engine/vocabulary_cleaner.py`. |
+| **Resultado esperado** | Términos limpios, normalizados y asociados al índice espacial. |
+| **Estado** | **Implementado** (verificado por `tests/test_vocab_cleaner.py`). |
 
 | RF-07 | **Caché de documentos por SHA-256 (LRU)** |
 | --- | --- |
@@ -334,6 +350,7 @@ Solo se listan tecnologías **realmente presentes y usadas** en el repositorio. 
 | PyMuPDF (fitz) | 1.28.2 | Lectura del PDF a nivel C: texto, coordenadas de palabras, imágenes, render de páginas. |
 | Pydantic | 2.13.5 | Modelos de validación de peticiones (`SearchRequest`, `AIRequest`, `AskRequest`). |
 | Pillow (PIL) | 12.3.0 | Preprocesado "Anti-Todo" de imágenes antes del OCR. |
+| NumPy | 2.5.3 | Operaciones vectoriales de filtrado espacial y sustracción de fondo local para detección de marcas de agua y logos en encabezados (`engine/ocr_engine.py`). |
 | pytesseract | 0.3.13 | Wrapper para Tesseract OCR. |
 | Tesseract OCR | 5.3.4 | Motor OCR del sistema (idiomas `spa`, `eng`, `osd`). |
 | httpx | 0.28.1 | Cliente HTTP asíncrono para comunicarse con Ollama. |
@@ -350,7 +367,7 @@ Solo se listan tecnologías **realmente presentes y usadas** en el repositorio. 
 | pytest | 9.1.1 | Framework de pruebas del backend/motor. |
 | uv | — | Gestor de entorno e instalación de dependencias Python (usado por `run.sh` cuando está disponible). |
 
-> **Dependencias declaradas sin uso:** `numpy>=1.24.0` (resuelta a 2.5.3) y `augly>=1.0.0` figuran en `requirements.txt`, pero **no son importadas por ningún módulo** (verificado por búsqueda exhaustiva). El `README.md` afirma que el runtime no depende de numpy/AugLy; la discrepancia se documenta como limitación/incidencia en [18. Limitaciones](#18-limitaciones-y-trabajo-futuro). No se recomienda su eliminación sin decisión del equipo, pero deben considerarse como dependencias muertas.
+> **Dependencias declaradas sin uso:** `augly>=1.0.0` figura en `requirements.txt`, pero **no es importada por ningún módulo**. Por su parte, `numpy` sí es utilizado de manera activa y justificada en `engine/ocr_engine.py` para álgebra vectorial de imagen (sustracción de fondo local de alta velocidad).
 
 ---
 
@@ -368,8 +385,9 @@ PDF-Engine/
 ├── engine/                         # Núcleo del motor (Python)
 │   ├── __init__.py                 # Exporta las clases públicas del motor
 │   ├── pdf_reader.py               # PDFEngineReader: lectura, caché, OCR-selectivo, índice
-│   ├── ocr_engine.py               # FastOCREngine + preprocesado Anti-Todo
-│   ├── search_index.py             # SearchEngine: búsqueda exacto → difuso → frase
+│   ├── ocr_engine.py               # FastOCREngine + preprocesado Anti-Todo + pase de marcas de agua
+│   ├── vocabulary_cleaner.py       # FastVocabCleaner: catálogo léxico y corrección ortográfica OCR
+│   ├── search_index.py             # SearchEngine: búsqueda multinivel (exacto → prefijo → subcadena → difuso → frase)
 │   ├── ai_extractor.py             # AIExtractor: integración con Ollama / Qwen 2.5
 │   └── telemetry.py                # SpeedProfiler: medición de tiempos por etapa
 ├── benchmarks/
@@ -377,8 +395,9 @@ PDF-Engine/
 ├── tests/
 │   ├── builders.py                 # Generadores de PDFs/imágenes de prueba
 │   ├── test_pdf_reader.py          # Pruebas del lector/caché/OCR-selectivo
-│   ├── test_ocr_engine.py          # Pruebas del OCR y preprocesado
-│   ├── test_search_index.py        # Pruebas de la búsqueda
+│   ├── test_ocr_engine.py          # Pruebas del OCR, preprocesado y marcas de agua
+│   ├── test_vocab_cleaner.py       # Pruebas del limpiador léxico y diccionarios
+│   ├── test_search_index.py        # Pruebas de la búsqueda multinivel, prefijos y coordenadas
 │   └── test_ai_extractor.py        # Pruebas de la IA (modelo mockeado)
 ├── frontend/                       # SPA React + Vite + Tailwind
 │   ├── package.json                # Dependencias y scripts (dev, build, lint, preview)
@@ -414,10 +433,10 @@ PDF-Engine/
 
 | Ruta | Responsabilidad |
 | --- | --- |
-| `engine/` | Núcleo del motor: procesamiento de PDF, OCR, búsqueda e IA. Independiente de FastAPI. |
+| `engine/` | Núcleo del motor: procesamiento de PDF, OCR, limpieza léxica, búsqueda e IA. Independiente de FastAPI. |
 | `frontend/` | Interfaz web compilada a estáticos y servida por el backend. |
 | `benchmarks/` | Scripts de medición de rendimiento (afinación de workers/DPI de OCR). |
-| `tests/` | Suite de pruebas automatizadas del motor y la IA (con mocking). |
+| `tests/` | Suite de pruebas automatizadas del motor, limpieza léxica y la IA (con mocking). |
 | `uploads/` | Directorio (runtime) de archivos subidos por el usuario. Ignorado por git. |
 | `samples/` | Directorio (runtime) del PDF de prueba generado por `test_benchmark.py`. Ignorado por git. |
 
@@ -427,9 +446,10 @@ PDF-Engine/
 | --- | --- |
 | `server.py` | Aplicación FastAPI: endpoints, jobs asíncronos, validaciones, CORS, servido del frontend y de estáticos. |
 | `run.sh` | Lanzador universal: prepara el entorno, compila el frontend si es necesario, comprueba Ollama y arranca el servidor en el puerto 8001. |
-| `engine/pdf_reader.py` | Lector dual de PDF: texto digital + OCR selectivo con deduplicación, índice de coordenadas y caché SHA-256. |
-| `engine/ocr_engine.py` | OCR paralelo con pool de procesos y preprocesado adaptativo. |
-| `engine/search_index.py` | Búsqueda léxica con fallbacks (exacto → normalizado → difuso → frase). |
+| `engine/pdf_reader.py` | Lector dual de PDF: texto digital + OCR selectivo con deduplicación, descomposición de sub-tokens e identificadores sin puntos, índice de coordenadas y caché SHA-256. |
+| `engine/ocr_engine.py` | OCR paralelo con pool de procesos, preprocesado adaptativo y pase de marcas de agua / logos en encabezados. |
+| `engine/vocabulary_cleaner.py` | Diccionario especializado (salud, institucional, financiero), corrección ortográfica de OCR y restitución de mayúsculas/minúsculas. |
+| `engine/search_index.py` | Búsqueda léxica multinivel (exacto ➔ prefijo ➔ subcadena ➔ difuso ➔ frase) y extracción de snippets con coordenadas espaciales. |
 | `engine/ai_extractor.py` | Poda de contexto, extracción de campos y Q&A sobre el documento con Qwen 2.5. |
 | `test_benchmark.py` | Punto de entrada del benchmark y generador del PDF de muestra de 20 páginas. |
 
@@ -816,8 +836,8 @@ No es una integración externa, pero conviene registrarla: la SPA se comunica co
 ### Suite existente
 
 - **Framework:** pytest 9.1.1, dependencia de `requirements-dev.txt`.
-- **Archivos de prueba:** `tests/builders.py` (generadores), `test_pdf_reader.py`, `test_ocr_engine.py`, `test_search_index.py`, `test_ai_extractor.py`.
-- **Total de pruebas:** 29.
+- **Archivos de prueba:** `tests/builders.py` (generadores), `test_pdf_reader.py`, `test_ocr_engine.py`, `test_vocab_cleaner.py`, `test_search_index.py`, `test_ai_extractor.py`.
+- **Total de pruebas:** 34.
 - **Pruebas que dependen de Tesseract:** 2 (marcadas con `skipif` si no está instalado).
 
 ### Módulos probados y casos
@@ -826,7 +846,8 @@ No es una integración externa, pero conviene registrarla: la SPA se comunica co
 | --- | --- | --- |
 | `tests/test_pdf_reader.py` | 6 | PDF digital válido, PDF corrupto lanza excepción, sin doble OCR en escaneos, hit/miss de caché, caché por archivo distinto, páginas digitales no se renderizan para OCR. |
 | `tests/test_ocr_engine.py` | 7 | Preprocesado devuelve escalas, downscale de imágenes grandes, upscale de imágenes pequeñas, bytes basura no rompen el worker, OCR lee texto real (requiere Tesseract), lote paralelo con progreso, config usa español. |
-| `tests/test_search_index.py` | 9 | Normalización de texto, coincidencia exacta con coordenadas, insensible a mayúsculas, insensible a tildes, prioridad exacto sobre difuso, sin coincidencias → vacío, frase multitérmino, resultados multipágina, documento mixto imagen+texto. |
+| `tests/test_vocab_cleaner.py` | 3 | Corrección ortográfica y fonética de OCR, restitución de display forms con mayúsculas/tildes, preservación de palabras no contempladas en diccionario. |
+| `tests/test_search_index.py` | 11 | Normalización de texto, coincidencia exacta con coordenadas, búsqueda por prefijo (palabras incompletas / autocompletado), insensible a mayúsculas, insensible a tildes, prioridad exacto sobre difuso, sin coincidencias → vacío, frase multitérmino, resultados multipágina, documento mixto imagen+texto. |
 | `tests/test_ai_extractor.py` | 7 | Extracción directa (modelo mockeado), error → "No encontrado", Q&A estructurado con evidencia, sin evidencia → no inventa, JSON inválido → nulos+error, campos vacíos no se envían al modelo, poda de contexto ≤ 3500. |
 
 ### Ejecución real durante la auditoría
@@ -840,10 +861,10 @@ Comando:
 Resultado:
 
 ```text
-Pruebas ejecutadas: 29
-Exitosas: 29
+Pruebas ejecutadas: 34
+Exitosas: 34
 Fallidas: 0
-Duración: 22.00 s
+Duración: 3.58 s
 ```
 
 ### Verificaciones adicionales ejecutadas durante la auditoría
@@ -1098,13 +1119,12 @@ Tabla de variables de entorno (para futura parametrización):
 2. **Un solo documento activo** — El backend guarda un único `active_document` global; un segundo procesamiento sobrescribe al anterior. No apto para uso multi-usuario.
 3. **Sin persistencia** — No hay base de datos; al reiniciar se pierde documento activo, caché y jobs. Los PDFs subidos quedan en `uploads/` sin limpieza automática.
 4. **Sin autenticación** y CORS abierto (`*`) con credenciales.
-5. **Dependencias muertas** — `numpy` y `augly` en `requirements.txt` sin uso en el código; contradicen parcialmente la afirmación del README de "sin numpy/Augly". PyMuPDF además declara NumPy como dependencia en algunos entornos (no verificado aquí).
+5. **Dependencia residual** — `augly` en `requirements.txt` sin uso en el código de producción. `numpy` sí se utiliza de manera activa y justificada en `engine/ocr_engine.py` para álgebra vectorial de sustracción de fondo.
 6. **Frontend sin TypeScript** y con 6 advertencias de lint (imports sin uso, `Date.now()` dentro de render en `ViewerTab`, advertencia de inmutabilidad en un efecto de `App.jsx`).
 7. **Textos/código en español** — La interfaz y los prompts están en español; no hay i18n (no es una limitación técnica en sí, relevante para difusión).
 8. **Residuos de plantilla Vite** — `App.css`, `assets/hero.png`, `assets/react.svg`, `assets/vite.svg` son restos de la plantilla inicial sin uso en la aplicación.
 9. **Hardcodeo de configuración** — Todos los parámetros operativos están fijos en el código (sin variables de entorno).
 10. **KPI "OCR Paralelo (12 Hilos)"** — Texto fijo en el frontend (`KpiStrip.jsx:55`) que no corresponde al tamaño real del pool calculado en runtime (en la auditoría, con 2 cores el pool era de ~1 worker). Confusión de UX, no de código.
-11. **`App.css` y plantillas**: cubiertas en el punto 8.
 
 ### Mejoras futuras (razonables y basadas en el proyecto; no implementadas)
 
@@ -1115,7 +1135,7 @@ Tabla de variables de entorno (para futura parametrización):
 - Limpieza programática de `uploads/` y límites de tiempo/cola para jobs de IA.
 - Extraer los prompts en un módulo/catálogo para facilitar afinado ("prompt management").
 - Soporte de recuperación **semántica** (embeddings) además del difuso como fallback avanzado de búsqueda.
-- Eliminación de dependencias muertas (`numpy`, `augly`) o su justificación documentada.
+- Eliminación de la dependencia residual `augly`.
 - Frontend migrado a TypeScript y limpieza de advertencias de lint.
 - Cobertura de código con `pytest --cov` (hoy no existe instrumento de cobertura).
 - Contenerizar (Dockerfile + docker-compose) para reproducibilidad del entorno.
@@ -1131,14 +1151,15 @@ Estado basado en la auditoría, pruebas ejecutadas y ejecución real de la API.
 | Frontend | **Implementado** | React 19 + Vite 8 + Tailwind 3. Build de producción OK; lint: 0 errores, 6 advertencias. |
 | Backend | **Implementado** | FastAPI con 11 endpoints operativos, jobs asíncronos y validación de subidas. Verificado en ejecución real. |
 | IA | **Implementado** | Qwen 2.5 vía Ollama (extracción + Q&A). Lógica probada con mocking; llamada real lenta en CPU (límite de hardware). |
-| Búsqueda | **Implementado** | Léxica exacto → difuso → frase, con coordenadas y snippets. Latencia verificada ~3 ms. |
-| OCR | **Implementado** | Tesseract 5.3.4 con pool paralelo, deduplicación y preprocesado Anti-Todo. 8 ítems en 11.6 s en el benchmark (2 cores). |
+| Búsqueda | **Implementado** | Léxica multinivel (exacto ➔ prefijo ➔ subcadena ➔ difuso ➔ frase), con coordenadas espaciales y snippets. Latencia verificada ~3–4 ms. |
+| OCR | **Implementado** | Tesseract 5.3.4 con pool paralelo, deduplicación, preprocesado Anti-Todo y pase de logos/marcas de agua tenues. |
+| Limpiador Léxico | **Implementado** | `FastVocabCleaner` con diccionarios de salud/institucional/financiero y correcciones automáticas de OCR. |
 | Base de datos | **No aplica / No implementado** | Sin base de datos; estado en memoria + caché LRU (3 docs) + archivos en `uploads/` y `samples/`. |
 | Autenticación | **No implementado** | La API es abierta; sin login, tokens ni control de acceso. |
 | Integraciones | **Parcial** | Única integración externa: Ollama (IA local). n8n/Telegram/webhooks/cloud: no existen. |
-| Pruebas | **Implementado** | 29 pytest, 29 exitosas en 22.00 s. 2 dependen de Tesseract instalado. |
-| Documentación | **Implementado** | `README.md` existente + nuevos documentos en `docs/` (este documento y sus complementos). |
-| Benchmarks | **Implementado** | `test_benchmark.py` y `benchmarks/benchmark_ocr_tuning.py`. Resultados del README reproducidos parcialmente (lectura/OCR en 12.33 s). |
+| Pruebas | **Implementado** | 34 pytest, 34 exitosas en 3.58 s. 2 dependen de Tesseract instalado. |
+| Documentación | **Implementado** | `README.md` existente + documentos actualizados en `docs/`. |
+| Benchmarks | **Implementado** | `test_benchmark.py` y `benchmarks/benchmark_ocr_tuning.py`. Resultados reproducibles (8 páginas de recibos/cédulas en ~3.4 s; 20 páginas en ~12.3 s). |
 
 ---
 

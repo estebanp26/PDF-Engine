@@ -24,7 +24,10 @@ flowchart TD
     READER -->|hash SHA-256| CACHE[Cache LRU en memoria<br/>3 documentos]
     READER -->|imágenes/render| OCR[FastOCREngine<br/>engine/ocr_engine.py]
     OCR --> TESS[Tesseract 5.x<br/>spa+eng · pool de workers]
-    READER --> IDX[Índice léxico word → coords]
+    OCR -->|pase watermark/logo --psm 11| OCR
+    OCR --> VOCAB[FastVocabCleaner<br/>engine/vocabulary_cleaner.py]
+    READER --> VOCAB
+    READER --> IDX[Índice léxico + sub-tokens + IDs]
     IDX --> SR2[SearchEngine<br/>engine/search_index.py]
 
     AI --> EX[AIExtractor<br/>engine/ai_extractor.py]
@@ -41,7 +44,7 @@ flowchart TD
 
 ## 2. Flujo de procesamiento de un documento (pipeline)
 
-Pipeline real de `PDFEngineReader.process_pdf` (engine/pdf_reader.py:60-317):
+Pipeline real de `PDFEngineReader.process_pdf` (engine/pdf_reader.py:60-321):
 
 ```mermaid
 flowchart TB
@@ -51,6 +54,8 @@ flowchart TB
     CACHE -->|No| PARSE[Pass 1 · PyMuPDF parse + extraer]
     PARSE --> REV[Por cada página]
     REV --> TXT[get_text words → word_locations<br/>texto digital + coords]
+    REV --> SUB1[Descomposición sub-tokens y números sin puntos]
+    TXT --> SUB1
     REV --> IMG[get_images → imágenes embebidas]
     TXT --> CLAS{texto útil < 30 chars?}
     CLAS -->|No · digital| NOOCR[Sin OCR de página]
@@ -61,9 +66,13 @@ flowchart TB
     OCRIMG --> OCR[Pass 2 · OCR paralelo<br/>ProcessPoolExecutor]
     REND --> OCR
     OCRIMGS --> OCR
-    OCR --> MAP[Pass 3 · mapear cajas<br/>px → puntos PDF]
-    MAP --> MERGE[Merge texto OCR a páginas]
+    OCR --> HDR[Pase de Logo/Watermark<br/>sustracción local + --psm 11]
+    HDR --> VOCAB[FastVocabCleaner<br/>corrección + normalización]
+    VOCAB --> MAP[Pass 3 · mapear cajas<br/>px → puntos PDF]
+    MAP --> SUB2[Descomposición sub-tokens OCR y Cédulas/MRZ]
+    SUB2 --> MERGE[Merge texto OCR a páginas]
     MERGE --> IDX2[Construir search_index<br/>word_locations + pages_norm]
+    SUB1 --> IDX2
     IDX2 --> MET[SpeedProfiler → metrics]
     MET --> PUT[Caché: poner resultado]
     PUT --> DONE2[Documento listo]
@@ -80,20 +89,23 @@ Orden real de coincidencia de `SearchEngine.search` (engine/search_index.py:83-2
 flowchart TB
     Q[Consulta del usuario] --> TOK[Tokenizar + normalizar]
     TOK --> EXACT{¿término en<br/>word_locations?}
-    EXACT -->|Sí| R1[Resultados exactos<br/>match_type = exacto]
-    EXACT -->|No| FZ{len ≥ 4?}
-    FZ -->|No| SKIP[Sin diferidos]
+    EXACT -->|Sí| R1[1. Coincidencia exacta<br/>match_type = exacto]
+    TOK --> PREFIX{¿inicio de palabra?<br/>cand.startswith term}
+    PREFIX -->|Sí| R2[2. Coincidencia por prefijo<br/>match_type = prefijo · autocompletado]
+    TOK --> SUBSTR{¿dentro de palabra?<br/>term in cand · len ≥ 3}
+    SUBSTR -->|Sí| R3[3. Coincidencia subcadena<br/>match_type = subcadena]
+    TOK --> FZ{¿sin aciertos previos<br/>y len ≥ 4?}
     FZ -->|Sí| SEQ[Comparar con difflib<br/>por primera letra]
     SEQ --> TH{ratio ≥ 0.82}
-    TH -->|Sí| R2[Resultados difusos<br/>top 5 candidatos × 10 ubicaciones]
-    TH -->|No| SKIP2[Sin coincidencia difusa]
+    TH -->|Sí| R4[4. Coincidencia difusa<br/>match_type = difuso NN%]
     TOK --> PHRASE{¿más de 1 token?}
     PHRASE -->|Sí| ALL{¿todos los tokens<br/>en página/fuente?}
-    ALL -->|Sí| R3[Resultado por frase<br/>match_type = frase]
-    ALL -->|No| SKIP3[Sin coincidencia de frase]
-    R1 --> DEDUP[Deduplicar (página, fuente, término, coords)]
+    ALL -->|Sí| R5[5. Coincidencia de frase<br/>match_type = frase]
+    R1 --> DEDUP[Deduplicar por página, fuente, término y coordenadas]
     R2 --> DEDUP
     R3 --> DEDUP
+    R4 --> DEDUP
+    R5 --> DEDUP
     DEDUP --> OUT[Results + matched_pages + search_latency_ms]
 ```
 

@@ -60,7 +60,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> **Nota:** `requirements.txt` incluye `numpy>=1.24.0` y `augly>=1.0.0`, que **no se usan en el runtime** (se documenta como limitación en la documentación principal). La instalación puede tardar por `augly`.
+> **Nota:** `requirements.txt` incluye `numpy>=1.24.0`, que es utilizado activamente por `engine/ocr_engine.py` para operaciones de filtrado vectorial y sustracción de fondo en la detección de marcas de agua y logos, y `augly>=1.0.0` que es una dependencia residual no importada en el runtime. La instalación de esta última puede demorarse unos minutos.
 
 Dependencias de desarrollo:
 
@@ -132,10 +132,10 @@ cd frontend && npm run dev    # http://localhost:5173 (proxya /api a 8001)
 .venv/bin/python3 -m pytest tests/ -q
 ```
 
-**Resultado verificado durante la auditoría:**
+**Resultado verificado:**
 
 ```text
-29 passed in 22.00s
+34 passed in 3.58s
 ```
 
 - 2 pruebas (`test_ocr_worker_reads_text`, `test_ocr_batch_parallel`) requieren Tesseract instalado y se omiten automáticamente si no está.
